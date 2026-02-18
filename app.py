@@ -112,7 +112,9 @@ def deduplicate_profiles(profiles):
     unique = []
     for p in profiles:
         url = p.get("linkedin_url") or ""
-        name = f"{p.get('first_name', '').lower().strip()} {p.get('last_name', '').lower().strip()}"
+        fn = (p.get("first_name") or "").lower().strip()
+        ln = (p.get("last_name") or "").lower().strip()
+        name = f"{fn} {ln}"
         
         if url and url in seen_urls:
             continue
@@ -133,7 +135,9 @@ def exclude_existing_profiles(profiles, existing_entries):
     
     for entry in existing_entries:
         contact = entry.get("contact", {})
-        name = f"{contact.get('first_name', '').lower().strip()} {contact.get('last_name', '').lower().strip()}"
+        fn = (contact.get("first_name") or "").lower().strip()
+        ln = (contact.get("last_name") or "").lower().strip()
+        name = f"{fn} {ln}"
         url = contact.get("linkedin_profile", "") or ""
         if name.strip():
             existing_names.add(name)
@@ -143,7 +147,9 @@ def exclude_existing_profiles(profiles, existing_entries):
     new_profiles = []
     skipped = 0
     for p in profiles:
-        name = f"{p.get('first_name', '').lower().strip()} {p.get('last_name', '').lower().strip()}"
+        fn = (p.get("first_name") or "").lower().strip()
+        ln = (p.get("last_name") or "").lower().strip()
+        name = f"{fn} {ln}"
         url = p.get("linkedin_url", "") or ""
         
         if (url and url in existing_urls) or (name.strip() and name in existing_names):
