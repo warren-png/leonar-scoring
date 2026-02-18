@@ -54,7 +54,12 @@ def sourcing_search(project_id, filters, source_type, page=1, page_size=25, acco
         payload["linkedin_api_type"] = linkedin_api_type
     
     resp = requests.post(f"{LEONAR_BASE}/sourcing/search", headers=leonar_headers(), json=payload)
-    resp.raise_for_status()
+    if not resp.ok:
+        try:
+            error_detail = resp.json()
+        except Exception:
+            error_detail = resp.text
+        raise Exception(f"{resp.status_code} - {error_detail}\n\nPayload envoyé: {json.dumps(payload, indent=2)}")
     return resp.json()["data"]
 
 def add_profiles_to_project(project_id, profiles):
