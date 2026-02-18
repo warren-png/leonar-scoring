@@ -78,7 +78,9 @@ def get_project_entries(project_id):
             f"{LEONAR_BASE}/projects/{project_id}/entries?limit=50&offset={offset}",
             headers=leonar_headers()
         )
-        resp.raise_for_status()
+        if not resp.ok:
+            # Non bloquant : on retourne ce qu'on a
+            break
         data = resp.json()
         entries = data.get("data", [])
         if not entries:
@@ -179,18 +181,10 @@ Réponds UNIQUEMENT en JSON valide :
     }},
     "locations": {{
         "countries": ["France"],
-        "cities": ["ville1", "ville2"]
-    }},
-    "years_experience": {{
-        "min": X,
-        "max": Y
-    }},
-    "skills": {{
-        "include": ["compétence1", "compétence2"],
-        "require_all": false
+        "regions": ["région1"]
     }},
     "keywords": {{
-        "include": ["mot-clé1"],
+        "include": ["mot-clé1", "mot-clé2"],
         "exclude": ["mot-clé à exclure"]
     }},
     "industries": ["secteur1", "secteur2"],
@@ -198,8 +192,8 @@ Réponds UNIQUEMENT en JSON valide :
 }}
 
 Sois précis sur les titres de poste — inclus les variantes FR et EN.
-Pour les villes, mets les villes de la région mentionnée (ex: Île-de-France → Paris, Nanterre, Boulogne-Billancourt, La Défense, etc.)
-Pour les skills, extrais les compétences techniques et métier mentionnées."""
+Pour les régions, mets le nom exact (ex: Île-de-France, Auvergne-Rhône-Alpes, etc.)
+Pour les mots-clés, extrais les termes techniques, outils, compétences et secteurs clés du brief."""
 
     response = claude_client.messages.create(
         model="claude-sonnet-4-20250514",
@@ -411,14 +405,14 @@ if "criteria" in st.session_state:
             height=80
         )
     with col_b:
-        edited_skills = st.text_area(
-            "🛠 Compétences",
-            value="\n".join(criteria.get("skills", {}).get("include", [])),
+        edited_keywords = st.text_area(
+            "🔑 Mots-clés",
+            value="\n".join(criteria.get("keywords", {}).get("include", [])),
             height=100
         )
-        edited_cities = st.text_area(
-            "📍 Villes",
-            value="\n".join(criteria.get("locations", {}).get("cities", [])),
+        edited_regions = st.text_area(
+            "📍 Régions",
+            value="\n".join(criteria.get("locations", {}).get("regions", [])),
             height=80
         )
     with col_c:
@@ -427,8 +421,13 @@ if "criteria" in st.session_state:
             value="\n".join(criteria.get("companies", {}).get("exclude", [])),
             height=100
         )
-        exp_min = st.number_input("XP min", value=criteria.get("years_experience", {}).get("min", 0))
-        exp_max = st.number_input("XP max", value=criteria.get("years_experience", {}).get("max", 15))
+        edited_keywords_exclude = st.text_area(
+            "🚫 Mots-clés à exclure",
+            value="\n".join(criteria.get("keywords", {}).get("exclude", [])),
+            height=80
+        )
+        exp_min = st.number_input("XP min (années)", value=0)
+        exp_max = st.number_input("XP max (années)", value=15)
     
     exclusion_list = [k.strip() for k in exclusion_keywords.split("\n") if k.strip()]
     
@@ -438,40 +437,43 @@ if "criteria" in st.session_state:
     def build_filters():
         filters = {}
         
-        # Titres
+        # Titres (sans include_current_only pour élargir)
         titles_inc = [t.strip() for t in edited_titles_include.split("\n") if t.strip()]
         titles_exc = [t.strip() for t in edited_titles_exclude.split("\n") if t.strip()]
         if titles_inc or titles_exc:
             filters["job_titles"] = {}
             if titles_inc:
                 filters["job_titles"]["include"] = titles_inc
-                filters["job_titles"]["include_current_only"] = True
             if titles_exc:
                 filters["job_titles"]["exclude"] = titles_exc
         
-        # Compétences
-        skills_list = [s.strip() for s in edited_skills.split("\n") if s.strip()]
-        if skills_list:
-            filters["skills"] = {"include": skills_list, "require_all": False}
+        # Mots-clés
+        kw_inc = [k.strip() for k in edited_keywords.split("\n") if k.strip()]
+        kw_exc = [k.strip() for k in edited_keywords_exclude.split("\n") if k.strip()]
+        # Ajouter aussi les exclusions du champ libre
+        kw_exc.extend(exclusion_list)
+        kw_exc = list(set(kw_exc))
+        if kw_inc or kw_exc:
+            filters["keywords"] = {}
+            if kw_inc:
+                filters["keywords"]["include"] = kw_inc
+            if kw_exc:
+                filters["keywords"]["exclude"] = kw_exc
         
-        # Localisation
-        cities = [c.strip() for c in edited_cities.split("\n") if c.strip()]
+        # Localisation (régions = states dans l'API)
+        regions = [r.strip() for r in edited_regions.split("\n") if r.strip()]
         countries = criteria.get("locations", {}).get("countries", ["France"])
         filters["locations"] = {"countries": countries}
-        if cities:
-            filters["locations"]["cities"] = cities
-        
-        # Expérience
-        filters["years_experience"] = {"min": int(exp_min), "max": int(exp_max)}
+        if regions:
+            filters["locations"]["states"] = regions
         
         # Entreprises à exclure
         companies_exc = [c.strip() for c in edited_companies_exclude.split("\n") if c.strip()]
         if companies_exc:
             filters["companies"] = {"exclude": companies_exc}
         
-        # Keywords exclude (depuis champ exclusion supplémentaire)
-        if exclusion_list:
-            filters["keywords"] = {"exclude": exclusion_list}
+        # Expérience
+        filters["years_experience"] = {"min": int(exp_min), "max": int(exp_max)}
         
         return filters
 
