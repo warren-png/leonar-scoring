@@ -317,17 +317,17 @@ with st.sidebar:
     
     source_type = st.selectbox(
         "Source de recherche",
-        ["leonar_source", "linkedin_unipile", "contacts"],
+        ["leonar_source", "linkedin", "contacts"],
         format_func=lambda x: {
             "leonar_source": "🔍 Leonar Source",
-            "linkedin_unipile": "🔗 LinkedIn Recruiter",
+            "linkedin": "🔗 LinkedIn Recruiter",
             "contacts": "📂 Contacts CRM"
         }[x]
     )
     
     # Si LinkedIn, charger les comptes connectés
     linkedin_account_id = None
-    if source_type == "linkedin_unipile":
+    if source_type == "linkedin":
         try:
             accounts = get_connected_accounts()
             if accounts:
@@ -496,7 +496,7 @@ if "criteria" in st.session_state:
         try:
             # Params LinkedIn
             extra_kwargs = {}
-            if source_type == "linkedin_unipile":
+            if source_type == "linkedin":
                 extra_kwargs["account_id"] = linkedin_account_id
                 extra_kwargs["linkedin_api_type"] = "recruiter"
                 
