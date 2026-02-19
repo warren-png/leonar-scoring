@@ -12,7 +12,6 @@ from dotenv import load_dotenv
 load_dotenv()
 st.set_page_config(page_title="Leonar Scoring Tool", layout="wide")
 
-# Support both .env (local) and st.secrets (Streamlit Cloud)
 def get_secret(key):
     val = os.getenv(key)
     if val:
@@ -39,8 +38,42 @@ def get_connected_accounts():
     resp.raise_for_status()
     return resp.json()["data"]
 
-def sourcing_search(project_id, filters, source_type, page=1, page_size=25, account_id=None, linkedin_api_type=None):
-    """Recherche sourcing unifiée"""
+def linkedin_lookup_locations(query, account_id, api_type="recruiter"):
+    """Cherche les IDs de localisation LinkedIn"""
+    resp = requests.get(
+        f"{LEONAR_BASE}/sourcing/linkedin/locations",
+        headers=leonar_headers(),
+        params={"q": query, "account_id": account_id, "api_type": api_type}
+    )
+    if not resp.ok:
+        return []
+    return resp.json().get("data", [])
+
+def linkedin_search(project_id, account_id, job_titles, location_ids=None, years_experience=None, page=1, page_size=25):
+    """Recherche LinkedIn via endpoint dédié"""
+    payload = {
+        "project_id": project_id,
+        "account_id": account_id,
+        "job_titles": job_titles,
+        "page": page,
+        "page_size": page_size,
+    }
+    if location_ids:
+        payload["location_ids"] = location_ids
+    if years_experience:
+        payload["years_experience"] = years_experience
+    
+    resp = requests.post(f"{LEONAR_BASE}/sourcing/linkedin/search", headers=leonar_headers(), json=payload)
+    if not resp.ok:
+        try:
+            error_detail = resp.json()
+        except Exception:
+            error_detail = resp.text
+        raise Exception(f"{resp.status_code} - {error_detail}\n\nPayload: {json.dumps(payload, indent=2)}")
+    return resp.json()["data"]
+
+def sourcing_search(project_id, filters, source_type, page=1, page_size=25):
+    """Recherche Leonar Source ou Contacts CRM"""
     payload = {
         "project_id": project_id,
         "source_type": source_type,
@@ -48,10 +81,6 @@ def sourcing_search(project_id, filters, source_type, page=1, page_size=25, acco
         "page": page,
         "page_size": page_size,
     }
-    if account_id:
-        payload["account_id"] = account_id
-    if linkedin_api_type:
-        payload["linkedin_api_type"] = linkedin_api_type
     
     resp = requests.post(f"{LEONAR_BASE}/sourcing/search", headers=leonar_headers(), json=payload)
     if not resp.ok:
@@ -59,7 +88,7 @@ def sourcing_search(project_id, filters, source_type, page=1, page_size=25, acco
             error_detail = resp.json()
         except Exception:
             error_detail = resp.text
-        raise Exception(f"{resp.status_code} - {error_detail}\n\nPayload envoyé: {json.dumps(payload, indent=2)}")
+        raise Exception(f"{resp.status_code} - {error_detail}\n\nPayload: {json.dumps(payload, indent=2)}")
     return resp.json()["data"]
 
 def add_profiles_to_project(project_id, profiles):
@@ -79,7 +108,6 @@ def get_project_entries(project_id):
             headers=leonar_headers()
         )
         if not resp.ok:
-            # Non bloquant : on retourne ce qu'on a
             break
         data = resp.json()
         entries = data.get("data", [])
@@ -159,6 +187,27 @@ def exclude_existing_profiles(profiles, existing_entries):
     
     return new_profiles, skipped
 
+def filter_by_location(profiles, region):
+    """Filtre post-recherche par localisation (filet de sécurité pour Leonar Source)"""
+    if not region:
+        return profiles, []
+    
+    region_lower = region.lower().strip()
+    region_terms = [t.strip() for t in region_lower.replace(",", " ").split() if len(t.strip()) > 2]
+    
+    matched = []
+    excluded = []
+    for p in profiles:
+        loc = ((p.get("location") or "")).lower()
+        if not loc:
+            matched.append(p)  # Pas de loc → on garde
+        elif any(term in loc for term in region_terms):
+            matched.append(p)
+        else:
+            excluded.append(p)
+    
+    return matched, excluded
+
 # ============================================================
 # CLAUDE API
 # ============================================================
@@ -189,17 +238,21 @@ Réponds UNIQUEMENT en JSON valide :
         "countries": ["France"],
         "regions": ["région1"]
     }},
+    "years_experience": {{
+        "min": X,
+        "max": Y
+    }},
     "keywords": {{
         "include": ["mot-clé1", "mot-clé2"],
         "exclude": ["mot-clé à exclure"]
     }},
-    "industries": ["secteur1", "secteur2"],
     "summary": "Résumé en 2 lignes du profil recherché"
 }}
 
 Sois précis sur les titres de poste — inclus les variantes FR et EN.
-Pour les régions, mets le nom exact (ex: Île-de-France, Auvergne-Rhône-Alpes, etc.)
-Pour les mots-clés, extrais les termes techniques, outils, compétences et secteurs clés du brief."""
+Pour les régions, mets le nom exact (ex: Île-de-France, Auvergne-Rhône-Alpes).
+Pour les mots-clés, extrais les termes techniques, outils, compétences et secteurs clés du brief.
+Pour years_experience, déduis-le de la séniorité indiquée."""
 
     response = claude_client.messages.create(
         model="claude-sonnet-4-20250514",
@@ -216,10 +269,9 @@ Pour les mots-clés, extrais les termes techniques, outils, compétences et sect
     return json.loads(text.strip())
 
 def score_profiles(claude_client, profiles, job_desc, transcript, criteria_summary, region, exclusions):
-    """Claude score un lot de profils contre le brief — version enrichie"""
+    """Claude score un lot de profils contre le brief"""
     profiles_text = ""
     for i, p in enumerate(profiles):
-        # Expériences
         experiences = ""
         if p.get("experiences"):
             for exp in p["experiences"][:4]:
@@ -229,22 +281,20 @@ def score_profiles(claude_client, profiles, job_desc, transcript, criteria_summa
                     period = f" [{exp.get('start_date', '')} → {exp.get('end_date', 'présent')}]"
                 experiences += f"  - {exp.get('title', 'N/A')} @ {exp.get('company_name', 'N/A')}{current}{period}\n"
         
-        # Formation
         education = ""
         if p.get("educations"):
             for edu in p["educations"][:2]:
                 education += f"  - {edu.get('diploma', '')} {edu.get('specialization', '')} @ {edu.get('educational_establishment', '')}\n"
         
-        # Skills
         skills = ", ".join(p.get("skills", [])[:10]) if p.get("skills") else "N/A"
         
         profiles_text += f"""
 --- PROFIL {i+1} (ID: {p.get('profile_id', 'N/A')}) ---
-Nom: {p.get('first_name', '')} {p.get('last_name', '')}
+Nom: {(p.get('first_name') or '')} {(p.get('last_name') or '')}
 Titre: {p.get('headline', 'N/A')}
 Localisation: {p.get('location', 'N/A')}
 Années d'expérience: {p.get('total_years_experience', 'N/A')}
-Résumé: {(p.get('summary') or 'N/A')[:200]}
+Résumé: {((p.get('summary') or 'N/A'))[:200]}
 Compétences: {skills}
 Expériences:
 {experiences}Formation:
@@ -283,7 +333,7 @@ BARÈME :
 - 4-5 : Match partiel
 - 0-3 : Peu pertinent
 
-Utilise TOUTES les données disponibles (skills, formation, parcours complet, résumé) pour scorer précisément. Sois exigeant et différenciant."""
+Utilise TOUTES les données (skills, formation, parcours, résumé). Sois exigeant et différenciant."""
 
     response = claude_client.messages.create(
         model="claude-sonnet-4-20250514",
@@ -330,17 +380,13 @@ with st.sidebar:
     if source_type == "linkedin":
         try:
             accounts = get_connected_accounts()
-            if accounts:
-                account_names = {f"{a['name']} ({a.get('license_type', '')})": a["id"] for a in accounts}
-                selected_account = st.selectbox("Compte LinkedIn", list(account_names.keys()))
+            recruiter_accounts = [a for a in accounts if a.get("api_status", {}).get("recruiter") == "active"]
+            if recruiter_accounts:
+                account_names = {f"{a['name']}": a["id"] for a in recruiter_accounts}
+                selected_account = st.selectbox("Compte LinkedIn Recruiter", list(account_names.keys()))
                 linkedin_account_id = account_names[selected_account]
-                
-                # Options LinkedIn
-                st.subheader("Options LinkedIn")
-                filter_open_to_work = st.checkbox("Open to Work uniquement", value=False)
-                connection_degrees = st.multiselect("Degré de connexion", [1, 2, 3], default=[2, 3])
             else:
-                st.warning("Aucun compte LinkedIn connecté dans Leonar.")
+                st.warning("Aucun compte LinkedIn Recruiter actif trouvé dans Leonar.")
         except Exception as e:
             st.error(f"Erreur comptes LinkedIn : {e}")
     
@@ -364,7 +410,7 @@ with col2:
 
 col3, col4 = st.columns(2)
 with col3:
-    region = st.text_input("Région / Localisation", placeholder="Ex: Paris, Île-de-France, Lyon...")
+    region = st.text_input("Région / Localisation", placeholder="Ex: Île-de-France, Lyon, PACA...")
 with col4:
     seniority = st.text_input("Séniorité (années d'expérience)", placeholder="Ex: 5-10 ans")
 
@@ -432,56 +478,17 @@ if "criteria" in st.session_state:
             value="\n".join(criteria.get("keywords", {}).get("exclude", [])),
             height=80
         )
-        exp_min = st.number_input("XP min (années)", value=0)
-        exp_max = st.number_input("XP max (années)", value=15)
+    
+    # XP — affiché sous les colonnes
+    col_xp1, col_xp2, col_xp3 = st.columns([1, 1, 2])
+    with col_xp1:
+        exp_min = st.number_input("XP min (années)", value=criteria.get("years_experience", {}).get("min", 0))
+    with col_xp2:
+        exp_max = st.number_input("XP max (années)", value=criteria.get("years_experience", {}).get("max", 15))
     
     exclusion_list = [k.strip() for k in exclusion_keywords.split("\n") if k.strip()]
     
     st.info(f"📋 {criteria.get('summary', '')}")
-    
-    # Construire les filtres mis à jour
-    def build_filters():
-        filters = {}
-        
-        # Titres (sans include_current_only pour élargir)
-        titles_inc = [t.strip() for t in edited_titles_include.split("\n") if t.strip()]
-        titles_exc = [t.strip() for t in edited_titles_exclude.split("\n") if t.strip()]
-        if titles_inc or titles_exc:
-            filters["job_titles"] = {}
-            if titles_inc:
-                filters["job_titles"]["include"] = titles_inc
-            if titles_exc:
-                filters["job_titles"]["exclude"] = titles_exc
-        
-        # Mots-clés
-        kw_inc = [k.strip() for k in edited_keywords.split("\n") if k.strip()]
-        kw_exc = [k.strip() for k in edited_keywords_exclude.split("\n") if k.strip()]
-        # Ajouter aussi les exclusions du champ libre
-        kw_exc.extend(exclusion_list)
-        kw_exc = list(set(kw_exc))
-        if kw_inc or kw_exc:
-            filters["keywords"] = {}
-            if kw_inc:
-                filters["keywords"]["include"] = kw_inc
-            if kw_exc:
-                filters["keywords"]["exclude"] = kw_exc
-        
-        # Localisation (régions = states dans l'API)
-        regions = [r.strip() for r in edited_regions.split("\n") if r.strip()]
-        countries = criteria.get("locations", {}).get("countries", ["France"])
-        filters["locations"] = {"countries": countries}
-        if regions:
-            filters["locations"]["states"] = regions
-        
-        # Entreprises à exclure
-        companies_exc = [c.strip() for c in edited_companies_exclude.split("\n") if c.strip()]
-        if companies_exc:
-            filters["companies"] = {"exclude": companies_exc}
-        
-        # Expérience
-        filters["years_experience"] = {"min": int(exp_min), "max": int(exp_max)}
-        
-        return filters
 
     # ============================================================
     # ÉTAPE 3 — RECHERCHE & SCORING
@@ -494,66 +501,134 @@ if "criteria" in st.session_state:
 
     if selected_project_id and st.button("🚀 Lancer recherche + scoring", type="primary"):
         
-        filters = build_filters()
         all_profiles = []
+        
+        # ---- Construire les paramètres de recherche ----
+        titles_inc = [t.strip() for t in edited_titles_include.split("\n") if t.strip()]
+        titles_exc = [t.strip() for t in edited_titles_exclude.split("\n") if t.strip()]
+        kw_inc = [k.strip() for k in edited_keywords.split("\n") if k.strip()]
+        kw_exc = [k.strip() for k in edited_keywords_exclude.split("\n") if k.strip()]
+        kw_exc.extend(exclusion_list)
+        kw_exc = list(set(kw_exc))
+        companies_exc = [c.strip() for c in edited_companies_exclude.split("\n") if c.strip()]
+        regions_list = [r.strip() for r in edited_regions.split("\n") if r.strip()]
+        years_exp = {"min": int(exp_min), "max": int(exp_max)}
         
         # ---- PHASE 1 : RECHERCHE ----
         st.subheader("Phase 1 — Recherche")
         progress_bar = st.progress(0, text="Recherche en cours...")
         
         try:
-            # Params LinkedIn
-            extra_kwargs = {}
             if source_type == "linkedin":
-                extra_kwargs["account_id"] = linkedin_account_id
-                extra_kwargs["linkedin_api_type"] = "recruiter"
+                # === LINKEDIN : endpoint dédié ===
                 
-                # Filtres LinkedIn spécifiques
-                linkedin_filters = {}
-                if 'filter_open_to_work' in dir() and filter_open_to_work:
-                    linkedin_filters["is_open_to_work"] = True
-                if 'connection_degrees' in dir() and connection_degrees:
-                    linkedin_filters["connection_degree"] = connection_degrees
-                if linkedin_filters:
-                    filters["linkedin_filters"] = linkedin_filters
+                # 1. Résoudre les IDs de localisation
+                location_ids = {}
+                if regions_list and linkedin_account_id:
+                    with st.spinner("Résolution des localisations LinkedIn..."):
+                        for region_name in regions_list:
+                            results = linkedin_lookup_locations(region_name, linkedin_account_id)
+                            if results:
+                                # Prendre le premier résultat
+                                loc = results[0]
+                                location_ids[loc["id"]] = loc["title"]
+                                st.caption(f"📍 {region_name} → {loc['title']} (ID: {loc['id']})")
+                            else:
+                                st.warning(f"⚠️ Localisation '{region_name}' non trouvée sur LinkedIn")
+                
+                # 2. Recherche paginée
+                page = 1
+                while len(all_profiles) < max_profiles:
+                    results = linkedin_search(
+                        project_id=selected_project_id,
+                        account_id=linkedin_account_id,
+                        job_titles=titles_inc,
+                        location_ids=location_ids if location_ids else None,
+                        years_experience=years_exp,
+                        page=page,
+                        page_size=25
+                    )
+                    
+                    profiles = results.get("profiles", [])
+                    if not profiles:
+                        break
+                    
+                    # Filtrer les profils déjà dans le projet (flag LinkedIn)
+                    profiles = [p for p in profiles if not p.get("already_in_project", False)]
+                    all_profiles.extend(profiles)
+                    
+                    total = results.get("total_count", len(all_profiles))
+                    progress = min(len(all_profiles) / max_profiles, 1.0)
+                    progress_bar.progress(progress, text=f"{len(all_profiles)} profils récupérés sur {total} disponibles")
+                    
+                    if not results.get("has_more", False):
+                        break
+                    
+                    page += 1
+                    time.sleep(0.5)
             
-            # Contacts : ajouter filtres spécifiques
-            if source_type == "contacts":
-                if "contacts_filters" not in filters:
-                    filters["contacts_filters"] = {}
-                filters["contacts_filters"]["contact_types"] = ["candidate"]
-            
-            page = 1
-            while len(all_profiles) < max_profiles:
-                results = sourcing_search(
-                    project_id=selected_project_id,
-                    filters=filters,
-                    source_type=source_type,
-                    page=page,
-                    page_size=25,
-                    **extra_kwargs
-                )
+            else:
+                # === LEONAR SOURCE / CONTACTS CRM ===
+                filters = {}
                 
-                profiles = results.get("profiles", [])
-                if not profiles:
-                    break
+                if titles_inc or titles_exc:
+                    filters["job_titles"] = {}
+                    if titles_inc:
+                        filters["job_titles"]["include"] = titles_inc
+                    if titles_exc:
+                        filters["job_titles"]["exclude"] = titles_exc
                 
-                all_profiles.extend(profiles)
-                total = results.get("total_count", len(all_profiles))
-                progress = min(len(all_profiles) / max_profiles, 1.0)
-                progress_bar.progress(progress, text=f"{len(all_profiles)} profils récupérés sur {total} disponibles")
+                if kw_inc or kw_exc:
+                    filters["keywords"] = {}
+                    if kw_inc:
+                        filters["keywords"]["include"] = kw_inc
+                    if kw_exc:
+                        filters["keywords"]["exclude"] = kw_exc
                 
-                if not results.get("has_more", False):
-                    break
+                countries = criteria.get("locations", {}).get("countries", ["France"])
+                filters["locations"] = {"countries": countries}
+                if regions_list:
+                    filters["locations"]["states"] = regions_list
                 
-                page += 1
-                time.sleep(0.5)
+                filters["years_experience"] = years_exp
+                
+                if companies_exc:
+                    filters["companies"] = {"exclude": companies_exc}
+                
+                if source_type == "contacts":
+                    if "contacts_filters" not in filters:
+                        filters["contacts_filters"] = {}
+                    filters["contacts_filters"]["contact_types"] = ["candidate"]
+                
+                page = 1
+                while len(all_profiles) < max_profiles:
+                    results = sourcing_search(
+                        project_id=selected_project_id,
+                        filters=filters,
+                        source_type=source_type,
+                        page=page,
+                        page_size=25
+                    )
+                    
+                    profiles = results.get("profiles", [])
+                    if not profiles:
+                        break
+                    
+                    all_profiles.extend(profiles)
+                    total = results.get("total_count", len(all_profiles))
+                    progress = min(len(all_profiles) / max_profiles, 1.0)
+                    progress_bar.progress(progress, text=f"{len(all_profiles)} profils récupérés sur {total} disponibles")
+                    
+                    if not results.get("has_more", False):
+                        break
+                    
+                    page += 1
+                    time.sleep(0.5)
+                
+                if results.get("filters_too_strict"):
+                    st.warning("⚠️ Leonar indique que les filtres sont trop stricts.")
             
             all_profiles = all_profiles[:max_profiles]
-            
-            if results.get("filters_too_strict"):
-                st.warning("⚠️ Leonar indique que les filtres sont trop stricts. Essaie d'élargir.")
-            
             progress_bar.progress(1.0, text=f"✅ {len(all_profiles)} profils récupérés")
             
         except Exception as e:
@@ -581,8 +656,14 @@ if "criteria" in st.session_state:
             except Exception as e:
                 st.warning(f"Impossible de vérifier les existants : {e}")
         
+        # ---- FILTRE LOCALISATION POST-RECHERCHE (filet de sécurité) ----
+        if region and source_type != "linkedin":
+            all_profiles, excluded_loc = filter_by_location(all_profiles, region)
+            if excluded_loc:
+                st.info(f"📍 {len(excluded_loc)} profils hors {region} retirés")
+        
         if not all_profiles:
-            st.warning("Tous les profils sont déjà dans le projet.")
+            st.warning("Aucun profil restant après filtrage.")
             st.stop()
         
         # ---- PHASE 2 : SCORING ----
@@ -626,7 +707,7 @@ if "criteria" in st.session_state:
         st.session_state["scoring_done"] = True
 
     # ============================================================
-    # RÉSULTATS (persiste)
+    # RÉSULTATS
     # ============================================================
     if st.session_state.get("scoring_done"):
         scored_profiles = st.session_state["scored_profiles"]
@@ -642,11 +723,10 @@ if "criteria" in st.session_state:
             score = p["score"]
             emoji = "🟢" if score >= 8 else "🟡" if score >= 6 else "🟠" if score >= 4 else "🔴"
             
-            # Ligne de résumé
             skills_preview = ", ".join(p.get("skills", [])[:5]) if p.get("skills") else ""
             xp = f" | {p.get('total_years_experience', '?')} ans XP" if p.get("total_years_experience") else ""
             
-            with st.expander(f"{emoji} **{score}/10** — {p.get('first_name', '')} {p.get('last_name', '')} | {p.get('headline', '')}{xp}"):
+            with st.expander(f"{emoji} **{score}/10** — {(p.get('first_name') or '')} {(p.get('last_name') or '')} | {p.get('headline', '')}{xp}"):
                 col_l, col_r = st.columns([2, 1])
                 with col_l:
                     st.write(f"💬 {p['justification']}")
@@ -684,17 +764,15 @@ if "criteria" in st.session_state:
                 added_total = 0
                 contact_ids = []
                 
-                # Préparer les profils avec toutes les données enrichies
                 profiles_payload = []
                 for p in profiles_to_push:
                     profile_data = {
                         "profile_id": p.get("profile_id"),
-                        "first_name": p.get("first_name", ""),
-                        "last_name": p.get("last_name", ""),
+                        "first_name": (p.get("first_name") or ""),
+                        "last_name": (p.get("last_name") or ""),
                         "headline": p.get("headline", ""),
                         "linkedin_url": p.get("linkedin_url", ""),
                         "location": p.get("location", ""),
-                        "summary": p.get("summary", ""),
                     }
                     if p.get("current_job"):
                         profile_data["current_job"] = p["current_job"]
@@ -710,7 +788,6 @@ if "criteria" in st.session_state:
                         profile_data["picture_url"] = p["picture_url"]
                     profiles_payload.append(profile_data)
                 
-                # Ajout par lots de 50 (max API = 100)
                 for i in range(0, len(profiles_payload), 50):
                     batch = profiles_payload[i:i+50]
                     result = add_profiles_to_project(project_id, batch)
@@ -723,7 +800,6 @@ if "criteria" in st.session_state:
                 
                 push_progress.progress(0.5, text=f"✅ {added_total} profils ajoutés. Notes...")
                 
-                # Notes de scoring
                 for idx, contact_id in enumerate(contact_ids):
                     if idx < len(profiles_to_push):
                         p = profiles_to_push[idx]
