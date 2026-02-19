@@ -3,6 +3,8 @@ import requests
 import json
 import time
 import os
+import random
+from datetime import date
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
@@ -11,6 +13,20 @@ from dotenv import load_dotenv
 # ============================================================
 load_dotenv()
 st.set_page_config(page_title="Leonar Scoring Tool", layout="wide")
+
+LINKEDIN_DAILY_LIMIT = 1500
+
+# Compteur quotidien LinkedIn (reset chaque jour)
+def get_linkedin_count():
+    today = date.today().isoformat()
+    if st.session_state.get("linkedin_count_date") != today:
+        st.session_state["linkedin_count_date"] = today
+        st.session_state["linkedin_count"] = 0
+    return st.session_state.get("linkedin_count", 0)
+
+def add_linkedin_count(n):
+    get_linkedin_count()  # force reset si nouveau jour
+    st.session_state["linkedin_count"] = st.session_state.get("linkedin_count", 0) + n
 
 def get_secret(key):
     val = os.getenv(key)
@@ -396,7 +412,16 @@ with st.sidebar:
             st.error(f"Erreur comptes LinkedIn : {e}")
     
     st.divider()
-    max_profiles = st.slider("Profils max à analyser", 25, 1000, 100, step=25)
+    if source_type == "linkedin":
+        max_profiles = st.slider("Profils max à analyser", 25, 250, 100, step=25)
+        linkedin_used = get_linkedin_count()
+        remaining = LINKEDIN_DAILY_LIMIT - linkedin_used
+        color = "🟢" if remaining > 500 else "🟡" if remaining > 200 else "🔴"
+        st.markdown(f"{color} **LinkedIn : {linkedin_used}/{LINKEDIN_DAILY_LIMIT}** profils consultés aujourd'hui")
+        if remaining < max_profiles:
+            st.warning(f"⚠️ Il te reste {remaining} profils LinkedIn aujourd'hui")
+    else:
+        max_profiles = st.slider("Profils max à analyser", 25, 1000, 100, step=25)
     score_threshold = st.slider("Score minimum à afficher", 0, 10, 6)
     
     st.divider()
@@ -527,6 +552,16 @@ if "criteria" in st.session_state:
             if source_type == "linkedin":
                 # === LINKEDIN : endpoint dédié ===
                 
+                # 0. Vérifier la limite quotidienne
+                linkedin_used = get_linkedin_count()
+                remaining = LINKEDIN_DAILY_LIMIT - linkedin_used
+                if remaining <= 0:
+                    st.error(f"🚫 Limite LinkedIn quotidienne atteinte ({LINKEDIN_DAILY_LIMIT} profils). Réessaie demain ou utilise Leonar Source.")
+                    st.stop()
+                if max_profiles > remaining:
+                    st.warning(f"⚠️ Il te reste {remaining} profils LinkedIn aujourd'hui. Recherche limitée à {remaining}.")
+                    max_profiles = remaining
+                
                 # 1. Résoudre les IDs de localisation
                 location_ids = {}
                 if regions_list and linkedin_account_id:
@@ -541,9 +576,14 @@ if "criteria" in st.session_state:
                             else:
                                 st.warning(f"⚠️ Localisation '{region_name}' non trouvée sur LinkedIn")
                 
-                # 2. Recherche paginée
+                # 2. Recherche paginée avec délais humains
                 page = 1
                 while len(all_profiles) < max_profiles:
+                    # Vérifier la limite avant chaque page
+                    if get_linkedin_count() >= LINKEDIN_DAILY_LIMIT:
+                        st.warning("⚠️ Limite LinkedIn quotidienne atteinte en cours de recherche. Arrêt.")
+                        break
+                    
                     results = linkedin_search(
                         project_id=selected_project_id,
                         account_id=linkedin_account_id,
@@ -559,19 +599,24 @@ if "criteria" in st.session_state:
                     if not profiles:
                         break
                     
+                    # Comptabiliser les profils consultés
+                    add_linkedin_count(len(profiles))
+                    
                     # Filtrer les profils déjà dans le projet (flag LinkedIn)
                     profiles = [p for p in profiles if not p.get("already_in_project", False)]
                     all_profiles.extend(profiles)
                     
                     total = results.get("total_count", len(all_profiles))
+                    linkedin_now = get_linkedin_count()
                     progress = min(len(all_profiles) / max_profiles, 1.0)
-                    progress_bar.progress(progress, text=f"{len(all_profiles)} profils récupérés sur {total} disponibles")
+                    progress_bar.progress(progress, text=f"{len(all_profiles)} profils récupérés sur {total} | LinkedIn: {linkedin_now}/{LINKEDIN_DAILY_LIMIT}")
                     
                     if not results.get("has_more", False):
                         break
                     
                     page += 1
-                    time.sleep(0.5)
+                    # Délai aléatoire pour simuler un comportement humain
+                    time.sleep(random.uniform(2.0, 4.0))
             
             else:
                 # === LEONAR SOURCE / CONTACTS CRM ===
