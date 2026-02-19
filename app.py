@@ -49,7 +49,7 @@ def linkedin_lookup_locations(query, account_id, api_type="recruiter"):
         return []
     return resp.json().get("data", [])
 
-def linkedin_search(project_id, account_id, job_titles, location_ids=None, years_experience=None, page=1, page_size=25):
+def linkedin_search(project_id, account_id, job_titles, location_ids=None, years_experience=None, keywords=None, page=1, page_size=25):
     """Recherche LinkedIn via endpoint dédié"""
     payload = {
         "project_id": project_id,
@@ -62,6 +62,8 @@ def linkedin_search(project_id, account_id, job_titles, location_ids=None, years
         payload["location_ids"] = location_ids
     if years_experience:
         payload["years_experience"] = years_experience
+    if keywords:
+        payload["keywords"] = keywords
     
     resp = requests.post(f"{LEONAR_BASE}/sourcing/linkedin/search", headers=leonar_headers(), json=payload)
     if not resp.ok:
@@ -548,6 +550,7 @@ if "criteria" in st.session_state:
                         job_titles=titles_inc,
                         location_ids=location_ids if location_ids else None,
                         years_experience=years_exp,
+                        keywords=kw_inc if kw_inc else None,
                         page=page,
                         page_size=25
                     )
