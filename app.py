@@ -380,13 +380,16 @@ with st.sidebar:
     if source_type == "linkedin":
         try:
             accounts = get_connected_accounts()
-            recruiter_accounts = [a for a in accounts if a.get("api_status", {}).get("recruiter") == "active"]
-            if recruiter_accounts:
-                account_names = {f"{a['name']}": a["id"] for a in recruiter_accounts}
-                selected_account = st.selectbox("Compte LinkedIn Recruiter", list(account_names.keys()))
+            if accounts:
+                account_names = {f"{a['name']} ({a.get('license_type', 'N/A')})": a["id"] for a in accounts}
+                selected_account = st.selectbox("Compte LinkedIn", list(account_names.keys()))
                 linkedin_account_id = account_names[selected_account]
+                
+                # Debug : afficher le statut du compte sélectionné
+                selected_acc = [a for a in accounts if a["id"] == linkedin_account_id][0]
+                st.caption(f"Statut API : {selected_acc.get('api_status', {})}")
             else:
-                st.warning("Aucun compte LinkedIn Recruiter actif trouvé dans Leonar.")
+                st.warning("Aucun compte LinkedIn connecté dans Leonar.")
         except Exception as e:
             st.error(f"Erreur comptes LinkedIn : {e}")
     
