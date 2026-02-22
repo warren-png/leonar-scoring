@@ -5,6 +5,7 @@ import time
 import os
 import random
 from datetime import date
+from pathlib import Path
 from anthropic import Anthropic
 from dotenv import load_dotenv
 
@@ -14,19 +15,33 @@ from dotenv import load_dotenv
 load_dotenv()
 st.set_page_config(page_title="Leonar Scoring Tool", layout="wide")
 
-LINKEDIN_DAILY_LIMIT = 1500
+LINKEDIN_DAILY_LIMIT = 1000  # limite LinkedIn Recruiter : ~1000 profils/jour par siège
 
-# Compteur quotidien LinkedIn (reset chaque jour)
-def get_linkedin_count():
+# Compteur quotidien LinkedIn — persistant dans un fichier (survit aux rechargements et multi-onglets)
+_USAGE_FILE = Path.home() / ".leonar_tool" / "linkedin_usage.json"
+
+def _load_usage() -> dict:
     today = date.today().isoformat()
-    if st.session_state.get("linkedin_count_date") != today:
-        st.session_state["linkedin_count_date"] = today
-        st.session_state["linkedin_count"] = 0
-    return st.session_state.get("linkedin_count", 0)
+    if _USAGE_FILE.exists():
+        try:
+            data = json.loads(_USAGE_FILE.read_text())
+            if data.get("date") == today:
+                return data
+        except (json.JSONDecodeError, KeyError):
+            pass
+    return {"date": today, "count": 0}
 
-def add_linkedin_count(n):
-    get_linkedin_count()  # force reset si nouveau jour
-    st.session_state["linkedin_count"] = st.session_state.get("linkedin_count", 0) + n
+def _save_usage(data: dict) -> None:
+    _USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _USAGE_FILE.write_text(json.dumps(data))
+
+def get_linkedin_count() -> int:
+    return _load_usage()["count"]
+
+def add_linkedin_count(n: int) -> None:
+    data = _load_usage()
+    data["count"] += n
+    _save_usage(data)
 
 def get_secret(key):
     val = os.getenv(key)
@@ -59,7 +74,7 @@ def leonar_request(method, url, **kwargs):
             time.sleep(2)
 
         if resp.status_code == 429:
-            wait = 2 ** attempt
+            wait = 2 ** (attempt + 1)  # séquence : 2s, 4s, 8s, 16s, 32s
             time.sleep(wait)
             continue
 
@@ -455,7 +470,7 @@ with st.sidebar:
         linkedin_used = get_linkedin_count()
         remaining = LINKEDIN_DAILY_LIMIT - linkedin_used
         color = "🟢" if remaining > 500 else "🟡" if remaining > 200 else "🔴"
-        st.markdown(f"{color} **LinkedIn : {linkedin_used}/{LINKEDIN_DAILY_LIMIT}** profils consultés aujourd'hui")
+        st.markdown(f"{color} **LinkedIn : {linkedin_used}/{LINKEDIN_DAILY_LIMIT}** profils consultés aujourd'hui _(compteur persistant)_")
         if remaining < max_profiles:
             st.warning(f"⚠️ Il te reste {remaining} profils LinkedIn aujourd'hui")
     else:
