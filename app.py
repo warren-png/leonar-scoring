@@ -118,6 +118,9 @@ def sanitize_boolean_query(q: str) -> str:
     q = re.sub(r'\bAND\s+AND\s+NOT\b', 'AND NOT', q)
     # Supprimer le caractère & (non supporté par le parser LinkedIn)
     q = q.replace('&', 'and')
+    # Supprimer les articles français avec apostrophe (d', l', j', etc.)
+    # "compagnie d'assurance" → "compagnie assurance" (l'apostrophe casse le parser LinkedIn)
+    q = re.sub(r"\b[a-zA-ZÀ-ÿ]+'\s*", " ", q)
     # Normaliser tous les whitespace (newlines, tabs, espaces multiples) en un seul espace
     q = re.sub(r'\s+', ' ', q)
     return q
@@ -343,7 +346,8 @@ Pour boolean_query : construis une expression booléenne LinkedIn complète et v
 - Ne pas inclure les lieux (gérés par le filtre location séparé)
 - Viser moins de 800 caractères — être concis, garder uniquement les termes discriminants
 - Exemple : ("directeur commercial" OR "sales director") AND (assurance OR IARD) AND NOT (junior OR stagiaire)
-- boolean_query doit être une STRING sur une seule ligne, jamais un tableau."""
+- boolean_query doit être une STRING sur une seule ligne, jamais un tableau.
+- Évite les apostrophes dans les expressions entre guillemets : écris "compagnie assurance" plutôt que "compagnie d'assurance", "groupe assurance" plutôt que "groupe d'assurance" — l'apostrophe casse le parser LinkedIn."""
 
     response = claude_client.messages.create(
         model="claude-sonnet-4-20250514",
@@ -609,6 +613,8 @@ if "criteria" in st.session_state:
             st.caption(f"🟡 {bq_len} caractères — acceptable, mais simplifier si possible")
         else:
             st.warning(f"🔴 {bq_len} caractères — query trop longue, risque de rejet par LinkedIn (max ~1 500). Simplifiez.")
+        if "'" in edited_boolean_query:
+            st.warning("⚠️ La query contient des apostrophes (`'`) dans des phrases — LinkedIn peut rejeter cette syntaxe. Le sanitizer les supprimera automatiquement avant l'envoi.")
 
     st.info(f"📋 {criteria.get('summary', '')}")
 
