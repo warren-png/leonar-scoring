@@ -1,6 +1,7 @@
 import streamlit as st
 import requests
 import json
+import re
 import time
 import os
 import random
@@ -104,6 +105,19 @@ def leonar_request(method, url, **kwargs):
         return resp
 
     raise Exception("🚫 Rate limit API dépassé après 5 tentatives. Réessaie dans quelques minutes.")
+
+def sanitize_boolean_query(q: str) -> str:
+    """Corrige les erreurs courantes de syntaxe boolean LinkedIn avant envoi."""
+    q = q.strip()
+    # NOT seul → AND NOT (LinkedIn exige AND NOT)
+    q = re.sub(r'\)\s*NOT\s*\(', ') AND NOT (', q)
+    # Dédoublonner AND AND NOT si déjà corrigé
+    q = re.sub(r'\bAND\s+AND\s+NOT\b', 'AND NOT', q)
+    # Supprimer le caractère & (non supporté par le parser LinkedIn)
+    q = q.replace('&', 'and')
+    # Normaliser les espaces multiples
+    q = re.sub(r'  +', ' ', q)
+    return q
 
 # ============================================================
 # LEONAR API
@@ -319,10 +333,13 @@ Pour les mots-clés (keywords), extrais les termes simples : compétences, outil
 Pour years_experience, déduis-le de la séniorité indiquée.
 
 Pour boolean_query : construis une expression booléenne LinkedIn complète et valide, prête à l'emploi.
-- Regroupe toutes les variantes de titres ET les compétences/secteurs clés
+- Regroupe les variantes de titres essentielles ET les mots-clés sectoriels clés
 - Opérateurs AND, OR, NOT obligatoirement en MAJUSCULES
+- Toujours "AND NOT" pour les exclusions, jamais "NOT" seul
 - Guillemets autour de chaque expression multi-mots (ex: "directeur commercial")
-- Exemple : ("directeur commercial" OR "sales director") AND (assurance OR IARD OR prévoyance) AND NOT (junior OR stagiaire)
+- Ne pas inclure les lieux (gérés par le filtre location séparé)
+- Viser moins de 800 caractères — être concis, garder uniquement les termes discriminants
+- Exemple : ("directeur commercial" OR "sales director") AND (assurance OR IARD) AND NOT (junior OR stagiaire)
 - boolean_query doit être une STRING sur une seule ligne, jamais un tableau."""
 
     response = claude_client.messages.create(
@@ -580,6 +597,15 @@ if "criteria" in st.session_state:
             height=80,
             help='Opérateurs AND OR NOT en MAJUSCULES. Guillemets autour des expressions multi-mots. Ex: ("directeur commercial" OR "sales director") AND (assurance OR IARD)'
         )
+        bq_len = len(edited_boolean_query.strip())
+        if bq_len == 0:
+            st.caption("💡 Query vide — la recherche s'appuiera uniquement sur les titres et filtres")
+        elif bq_len < 1000:
+            st.caption(f"✅ {bq_len} caractères — longueur optimale")
+        elif bq_len < 1500:
+            st.caption(f"🟡 {bq_len} caractères — acceptable, mais simplifier si possible")
+        else:
+            st.warning(f"🔴 {bq_len} caractères — query trop longue, risque de rejet par LinkedIn (max ~1 500). Simplifiez.")
 
     st.info(f"📋 {criteria.get('summary', '')}")
 
@@ -640,9 +666,9 @@ if "criteria" in st.session_state:
                                 st.warning(f"⚠️ Localisation '{region_name}' non trouvée sur LinkedIn")
                 
                 # 2. Boolean query — directement depuis le champ UI (édité par l'utilisateur ou extrait par Claude)
-                boolean_query = edited_boolean_query.strip() if edited_boolean_query.strip() else None
+                boolean_query = sanitize_boolean_query(edited_boolean_query) if edited_boolean_query.strip() else None
                 if boolean_query:
-                    st.caption(f"🔍 Boolean query : `{boolean_query}`")
+                    st.caption(f"🔍 Boolean query envoyée : `{boolean_query}`")
 
                 # 3. Recherche paginée avec délais humains
                 page = 1
