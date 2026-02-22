@@ -33,8 +33,11 @@ def _load_usage() -> dict:
     return {"date": today, "count": 0}
 
 def _save_usage(data: dict) -> None:
-    _USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
-    _USAGE_FILE.write_text(json.dumps(data))
+    try:
+        _USAGE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _USAGE_FILE.write_text(json.dumps(data))
+    except (OSError, PermissionError):
+        pass  # Streamlit Cloud : filesystem read-only, dégradation silencieuse
 
 def get_linkedin_count() -> int:
     return _load_usage()["count"]
@@ -669,6 +672,18 @@ if "criteria" in st.session_state:
                 boolean_query = sanitize_boolean_query(edited_boolean_query) if edited_boolean_query.strip() else None
                 if boolean_query:
                     st.caption(f"🔍 Boolean query envoyée : `{boolean_query}`")
+
+                # Debug : afficher le payload complet avant envoi
+                with st.expander("🛠 Debug — payload envoyé à l'API"):
+                    debug_payload = {
+                        "project_id": selected_project_id,
+                        "account_id": linkedin_account_id,
+                        "boolean_query": boolean_query,
+                        "years_experience": years_exp,
+                        "location_ids": list(location_ids.keys()) if location_ids else None,
+                        "job_titles": titles_inc if titles_inc else None,
+                    }
+                    st.json(debug_payload)
 
                 # 3. Recherche paginée avec délais humains
                 page = 1
