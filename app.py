@@ -115,8 +115,8 @@ def sanitize_boolean_query(q: str) -> str:
     q = re.sub(r'\bAND\s+AND\s+NOT\b', 'AND NOT', q)
     # Supprimer le caractère & (non supporté par le parser LinkedIn)
     q = q.replace('&', 'and')
-    # Normaliser les espaces multiples
-    q = re.sub(r'  +', ' ', q)
+    # Normaliser tous les whitespace (newlines, tabs, espaces multiples) en un seul espace
+    q = re.sub(r'\s+', ' ', q)
     return q
 
 # ============================================================
