@@ -151,7 +151,7 @@ def linkedin_search(project_id, account_id, job_titles, location_ids=None, years
         payload["job_titles"] = job_titles
     if location_ids:
         payload["location_ids"] = location_ids
-    if years_experience:
+    if years_experience and (years_experience.get("min", 0) > 0 or years_experience.get("max", 0) > 0):
         payload["years_experience"] = years_experience
     if boolean_query:
         payload["boolean_query"] = boolean_query
@@ -673,16 +673,17 @@ if "criteria" in st.session_state:
                 if boolean_query:
                     st.caption(f"🔍 Boolean query envoyée : `{boolean_query}`")
 
-                # Debug : afficher le payload complet avant envoi
+                # Debug : afficher le payload complet avant envoi (miroir exact de ce qui est envoyé)
                 with st.expander("🛠 Debug — payload envoyé à l'API"):
                     debug_payload = {
                         "project_id": selected_project_id,
                         "account_id": linkedin_account_id,
                         "boolean_query": boolean_query,
-                        "years_experience": years_exp,
                         "location_ids": list(location_ids.keys()) if location_ids else None,
                         "job_titles": titles_inc if titles_inc else None,
                     }
+                    if years_exp.get("min", 0) > 0 or years_exp.get("max", 0) > 0:
+                        debug_payload["years_experience"] = years_exp
                     st.json(debug_payload)
 
                 # 3. Recherche paginée avec délais humains
