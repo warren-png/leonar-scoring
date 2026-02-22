@@ -45,49 +45,86 @@ LEONAR_BASE = "https://app.leonar.app/api/v1"
 def leonar_headers():
     return {"Authorization": f"Bearer {leonar_api_key}", "Content-Type": "application/json"}
 
+# Scopes minimum requis pour cet outil
+REQUIRED_SCOPES = "sourcing:read, sourcing:write, contacts:read, projects:read"
+
+def leonar_request(method, url, **kwargs):
+    """Exécute une requête Leonar avec retry exponentiel sur 429 et gestion d'erreurs par code."""
+    for attempt in range(5):
+        resp = requests.request(method, url, headers=leonar_headers(), **kwargs)
+
+        # Pause si on approche la limite API (1000 req/h)
+        remaining = resp.headers.get("X-RateLimit-Remaining")
+        if remaining is not None and int(remaining) < 10:
+            time.sleep(2)
+
+        if resp.status_code == 429:
+            wait = 2 ** attempt
+            time.sleep(wait)
+            continue
+
+        if not resp.ok:
+            try:
+                error = resp.json().get("error", {})
+                code = error.get("code", "unknown")
+                message = error.get("message", resp.text)
+            except Exception:
+                code, message = "unknown", resp.text
+
+            if code == "insufficient_scope":
+                raise Exception(f"🔑 Permissions insuffisantes. Scopes requis pour cet outil : {REQUIRED_SCOPES}\n{message}")
+            elif code == "invalid_api_key":
+                raise Exception("🔑 Clé API invalide ou révoquée. Vérifie ta LEONAR_API_KEY.")
+            elif code == "billing_required":
+                raise Exception("💳 Abonnement Leonar requis pour cette fonctionnalité.")
+            elif code == "plan_upgrade_required":
+                raise Exception("📦 Fonctionnalité non disponible sur le plan actuel.")
+            elif code == "validation_error":
+                raise Exception(f"⚠️ Paramètres invalides : {message}")
+            elif code == "not_found":
+                raise Exception(f"❌ Ressource introuvable : {message}")
+            else:
+                raise Exception(f"{resp.status_code} [{code}] : {message}")
+
+        return resp
+
+    raise Exception("🚫 Rate limit API dépassé après 5 tentatives. Réessaie dans quelques minutes.")
+
 # ============================================================
 # LEONAR API
 # ============================================================
 def get_connected_accounts():
     """Récupère les comptes LinkedIn connectés"""
-    resp = requests.get(f"{LEONAR_BASE}/connected-accounts", headers=leonar_headers())
-    resp.raise_for_status()
+    resp = leonar_request("GET", f"{LEONAR_BASE}/connected-accounts")
     return resp.json()["data"]
 
 def linkedin_lookup_locations(query, account_id, api_type="recruiter"):
     """Cherche les IDs de localisation LinkedIn"""
-    resp = requests.get(
+    resp = leonar_request(
+        "GET",
         f"{LEONAR_BASE}/sourcing/linkedin/locations",
-        headers=leonar_headers(),
         params={"q": query, "account_id": account_id, "api_type": api_type}
     )
-    if not resp.ok:
-        return []
     return resp.json().get("data", [])
 
-def linkedin_search(project_id, account_id, job_titles, location_ids=None, years_experience=None, keywords=None, page=1, page_size=25):
+def linkedin_search(project_id, account_id, job_titles, location_ids=None, years_experience=None, boolean_query=None, page=1, page_size=25):
     """Recherche LinkedIn via endpoint dédié"""
     payload = {
         "project_id": project_id,
         "account_id": account_id,
-        "job_titles": job_titles,
         "page": page,
         "page_size": page_size,
     }
+    if job_titles:
+        payload["job_titles"] = job_titles
     if location_ids:
         payload["location_ids"] = location_ids
     if years_experience:
         payload["years_experience"] = years_experience
-    if keywords:
-        payload["keywords"] = keywords
-    
-    resp = requests.post(f"{LEONAR_BASE}/sourcing/linkedin/search", headers=leonar_headers(), json=payload)
-    if not resp.ok:
-        try:
-            error_detail = resp.json()
-        except Exception:
-            error_detail = resp.text
-        raise Exception(f"{resp.status_code} - {error_detail}\n\nPayload: {json.dumps(payload, indent=2)}")
+    if boolean_query:
+        payload["boolean_query"] = boolean_query
+
+    resp = leonar_request("POST", f"{LEONAR_BASE}/sourcing/linkedin/search", json=payload)
     return resp.json()["data"]
 
 def sourcing_search(project_id, filters, source_type, page=1, page_size=25):
@@ -99,14 +136,7 @@ def sourcing_search(project_id, filters, source_type, page=1, page_size=25):
         "page": page,
         "page_size": page_size,
     }
-    
-    resp = requests.post(f"{LEONAR_BASE}/sourcing/search", headers=leonar_headers(), json=payload)
-    if not resp.ok:
-        try:
-            error_detail = resp.json()
-        except Exception:
-            error_detail = resp.text
-        raise Exception(f"{resp.status_code} - {error_detail}\n\nPayload: {json.dumps(payload, indent=2)}")
+    resp = leonar_request("POST", f"{LEONAR_BASE}/sourcing/search", json=payload)
     return resp.json()["data"]
 
 def add_profiles_to_project(project_id, profiles):
@@ -260,6 +290,7 @@ Réponds UNIQUEMENT en JSON valide :
         "min": X,
         "max": Y
     }},
+    "boolean_query": "expression booléenne LinkedIn complète",
     "keywords": {{
         "include": ["mot-clé1", "mot-clé2"],
         "exclude": ["mot-clé à exclure"]
@@ -269,8 +300,15 @@ Réponds UNIQUEMENT en JSON valide :
 
 Sois précis sur les titres de poste — inclus les variantes FR et EN.
 Pour les régions, mets le nom exact (ex: Île-de-France, Auvergne-Rhône-Alpes).
-Pour les mots-clés, extrais les termes techniques, outils, compétences et secteurs clés du brief.
-Pour years_experience, déduis-le de la séniorité indiquée."""
+Pour les mots-clés (keywords), extrais les termes simples : compétences, outils, secteurs (un terme par item, pas d'opérateurs booléens).
+Pour years_experience, déduis-le de la séniorité indiquée.
+
+Pour boolean_query : construis une expression booléenne LinkedIn complète et valide, prête à l'emploi.
+- Regroupe toutes les variantes de titres ET les compétences/secteurs clés
+- Opérateurs AND, OR, NOT obligatoirement en MAJUSCULES
+- Guillemets autour de chaque expression multi-mots (ex: "directeur commercial")
+- Exemple : ("directeur commercial" OR "sales director") AND (assurance OR IARD OR prévoyance) AND NOT (junior OR stagiaire)
+- boolean_query doit être une STRING sur une seule ligne, jamais un tableau."""
 
     response = claude_client.messages.create(
         model="claude-sonnet-4-20250514",
@@ -517,7 +555,17 @@ if "criteria" in st.session_state:
         exp_max = st.number_input("XP max (années)", value=criteria.get("years_experience", {}).get("max", 15))
     
     exclusion_list = [k.strip() for k in exclusion_keywords.split("\n") if k.strip()]
-    
+
+    # Champ boolean query — visible uniquement pour LinkedIn
+    edited_boolean_query = ""
+    if source_type == "linkedin":
+        edited_boolean_query = st.text_area(
+            "🔍 Boolean Query LinkedIn",
+            value=criteria.get("boolean_query", ""),
+            height=80,
+            help='Opérateurs AND OR NOT en MAJUSCULES. Guillemets autour des expressions multi-mots. Ex: ("directeur commercial" OR "sales director") AND (assurance OR IARD)'
+        )
+
     st.info(f"📋 {criteria.get('summary', '')}")
 
     # ============================================================
@@ -576,21 +624,26 @@ if "criteria" in st.session_state:
                             else:
                                 st.warning(f"⚠️ Localisation '{region_name}' non trouvée sur LinkedIn")
                 
-                # 2. Recherche paginée avec délais humains
+                # 2. Boolean query — directement depuis le champ UI (édité par l'utilisateur ou extrait par Claude)
+                boolean_query = edited_boolean_query.strip() if edited_boolean_query.strip() else None
+                if boolean_query:
+                    st.caption(f"🔍 Boolean query : `{boolean_query}`")
+
+                # 3. Recherche paginée avec délais humains
                 page = 1
                 while len(all_profiles) < max_profiles:
                     # Vérifier la limite avant chaque page
                     if get_linkedin_count() >= LINKEDIN_DAILY_LIMIT:
                         st.warning("⚠️ Limite LinkedIn quotidienne atteinte en cours de recherche. Arrêt.")
                         break
-                    
+
                     results = linkedin_search(
                         project_id=selected_project_id,
                         account_id=linkedin_account_id,
                         job_titles=titles_inc,
                         location_ids=location_ids if location_ids else None,
                         years_experience=years_exp,
-                        keywords=kw_inc if kw_inc else None,
+                        boolean_query=boolean_query,
                         page=page,
                         page_size=25
                     )
