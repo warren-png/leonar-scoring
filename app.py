@@ -154,7 +154,7 @@ def linkedin_search(project_id, account_id, job_titles, location_ids=None, years
         payload["job_titles"] = job_titles
     if location_ids:
         payload["location_ids"] = location_ids
-    if years_experience and (years_experience.get("min", 0) > 0 or years_experience.get("max", 0) > 0):
+    if years_experience and (years_experience.get("min", 0) > 0 and years_experience.get("max", 0) > 0):
         payload["years_experience"] = years_experience
     if boolean_query:
         payload["boolean_query"] = boolean_query
@@ -591,7 +591,7 @@ if "criteria" in st.session_state:
     with col_xp1:
         exp_min = st.number_input("XP min (années)", value=criteria.get("years_experience", {}).get("min", 0))
     with col_xp2:
-        exp_max = st.number_input("XP max (années)", value=criteria.get("years_experience", {}).get("max", 15))
+        exp_max = st.number_input("XP max (années)", value=criteria.get("years_experience", {}).get("max", 0))
     
     exclusion_list = [k.strip() for k in exclusion_keywords.split("\n") if k.strip()]
 
