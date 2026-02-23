@@ -1233,10 +1233,17 @@ with tab2:
                         f'src="data:image/png;base64,{logo_b64}"',
                     )
 
-                    # Injection LinkedIn (côté Python, fiable à 100%)
-                    linkedin_val = linkedin_url.strip() if linkedin_url.strip() else "#"
-                    final_html = final_html.replace('href="{{LIEN_LINKEDIN}}"', f'href="{linkedin_val}"')
-                    final_html = final_html.replace('{{LIEN_LINKEDIN}}', linkedin_val)
+                    # Injection LinkedIn — regex robuste qui écrase la valeur
+                    # quelle que soit ce que Claude a mis (placeholder ou URL extraite du CV)
+                    if linkedin_url.strip():
+                        final_html = re.sub(
+                            r'(fa-brands fa-linkedin-in[^>]*></i>\s*<a href=")[^"]*(")',
+                            rf'\g<1>{linkedin_url.strip()}\g<2>',
+                            final_html,
+                        )
+                    # Nettoyage des placeholders résiduels
+                    final_html = final_html.replace('href="{{LIEN_LINKEDIN}}"', f'href="{linkedin_url.strip() or "#"}"')
+                    final_html = final_html.replace('{{LIEN_LINKEDIN}}', linkedin_url.strip() or "#")
 
                     # ÉTAPE 5 — Injection du bouton "Enregistrer en PDF"
                     # Ce bouton appelle window.print() du navigateur = PDF parfait, natif, gratuit
@@ -1287,3 +1294,61 @@ with tab2:
 
         with st.expander("👁 Aperçu du dossier"):
             st.components.v1.html(html_content, height=900, scrolling=True)
+
+        st.divider()
+
+        # --- CORRECTIONS RAPIDES ---
+        with st.expander("✏️ Corrections rapides — modifier sans régénérer"):
+            st.caption("Corrige les champs ci-dessous puis clique **Appliquer**. Le fichier à télécharger sera mis à jour instantanément.")
+
+            # Extraction des valeurs actuelles depuis le HTML
+            def _extract(pattern, html, default=""):
+                m = re.search(pattern, html, re.DOTALL)
+                return m.group(1).strip() if m else default
+
+            cur_nom     = _extract(r'class="candidate-name">([^<]+)<', html_content)
+            cur_poste   = _extract(r'class="candidate-role">([^<]+)<', html_content)
+            cur_email   = _extract(r'fa-solid fa-envelope[^>]*></i>\s*([^<\n]+)', html_content)
+            cur_tel     = _extract(r'fa-solid fa-phone[^>]*></i>\s*([^<\n]+)', html_content)
+            cur_li      = _extract(r'fa-brands fa-linkedin-in[^>]*></i>\s*<a href="([^"]+)"', html_content)
+            cur_analyse = _extract(r'class="hunter-text">\s*(.*?)\s*</p>', html_content)
+
+            fix_col1, fix_col2 = st.columns(2)
+            with fix_col1:
+                new_nom   = st.text_input("Nom du candidat",  value=cur_nom,   key="fix_nom")
+                new_email = st.text_input("Email",             value=cur_email, key="fix_email")
+                new_tel   = st.text_input("Téléphone",         value=cur_tel,   key="fix_tel")
+            with fix_col2:
+                new_poste = st.text_input("Poste",             value=cur_poste, key="fix_poste")
+                new_li    = st.text_input("LinkedIn (URL)",    value=cur_li,    key="fix_li")
+
+            new_analyse = st.text_area("Notre Analyse (texte en italique page 1)",
+                                        value=cur_analyse, height=120, key="fix_analyse")
+
+            if st.button("✅ Appliquer les corrections", type="primary", key="fix_apply"):
+                h = st.session_state["dossier_html"]
+
+                # Nom
+                if new_nom:
+                    h = re.sub(r'(class="candidate-name">)[^<]*(</h1>)', rf'\g<1>{new_nom}\g<2>', h)
+                # Poste
+                if new_poste:
+                    h = re.sub(r'(class="candidate-role">)[^<]*(</div>)', rf'\g<1>{new_poste}\g<2>', h, count=1)
+                # Email
+                if new_email:
+                    h = re.sub(r'(fa-solid fa-envelope[^>]*></i> )[^<\n]+', rf'\g<1>{new_email}', h)
+                # Téléphone
+                if new_tel:
+                    h = re.sub(r'(fa-solid fa-phone[^>]*></i> )[^<\n]+', rf'\g<1>{new_tel}', h)
+                # LinkedIn URL
+                if new_li:
+                    h = re.sub(r'(fa-brands fa-linkedin-in[^>]*></i>\s*<a href=")[^"]*(")',
+                                rf'\g<1>{new_li}\g<2>', h)
+                # Analyse
+                if new_analyse:
+                    h = re.sub(r'(class="hunter-text">)\s*.*?\s*(</p>)',
+                                rf'\g<1>{new_analyse}\g<2>', h, flags=re.DOTALL)
+
+                st.session_state["dossier_html"] = h
+                st.success("Corrections appliquées ✓ — retélécharge le dossier ci-dessus.")
+                st.rerun()
