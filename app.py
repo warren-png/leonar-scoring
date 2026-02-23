@@ -1131,17 +1131,17 @@ with tab2:
             for err in errors:
                 st.error(f"❌ {err}")
         else:
-            with st.spinner("Claude lit le CV et la Score Card, génère le dossier… (30 à 90 s)"):
+            with st.status("Génération du dossier en cours…", expanded=True) as status:
                 try:
-                    # 1. Encoder le CV PDF
+                    # ÉTAPE 1 — Lecture des fichiers
+                    st.write("📄 Lecture du CV et de la Score Card…")
                     pdf_bytes = cv_file.read()
                     pdf_b64 = base64.b64encode(pdf_bytes).decode()
-
-                    # 2. Lire la Score Card
                     scorecard_bytes = scorecard_file.read()
                     scorecard_ext = scorecard_file.name.rsplit(".", 1)[-1].lower()
 
-                    # 3. Construire le contenu Claude (SANS logo dans le template)
+                    # ÉTAPE 2 — Construction du message Claude
+                    st.write("🧠 Envoi à Claude pour analyse et génération…")
                     content_blocks = [
                         {
                             "type": "document",
@@ -1154,7 +1154,6 @@ with tab2:
                         },
                     ]
 
-                    # Ajouter la score card selon son format
                     if scorecard_ext in ("html", "htm"):
                         scorecard_text = scorecard_bytes.decode("utf-8", errors="ignore")
                         content_blocks.append({
@@ -1162,7 +1161,6 @@ with tab2:
                             "text": f"SCORE CARD DU POSTE (HTML) :\n{scorecard_text}",
                         })
                     else:
-                        # PDF
                         sc_b64 = base64.b64encode(scorecard_bytes).decode()
                         content_blocks.append({
                             "type": "document",
@@ -1174,91 +1172,85 @@ with tab2:
                             "title": "Score Card du poste",
                         })
 
-                    # Prompt final — le template est envoyé SANS le logo base64
                     user_prompt = (
                         f"BRIEF / COMPTE-RENDU ENTRETIEN :\n{brief_text.strip()}\n\n"
                         f"COMMERCIAL : {commercial}\n\n"
                         "INSTRUCTIONS SCORE CARD :\n"
-                        "Lis la Score Card du poste jointe ci-dessus. "
-                        "Extrais les 4 critères, les notes (/5) et les analyses. "
-                        "Utilise-les pour remplir le tableau de la page 2 du dossier.\n\n"
+                        "Lis la Score Card du poste ci-dessus. "
+                        "Extrais les 4 critères, notes (/5) et analyses. "
+                        "Utilise-les pour remplir le tableau page 2.\n\n"
                         f"VOICI LE CODE HTML MAÎTRE À REMPLIR :\n{HTML_MASTER_TEMPLATE}"
                     )
                     content_blocks.append({"type": "text", "text": user_prompt})
 
-                    # 4. Appel Claude
+                    # ÉTAPE 3 — Appel Claude (timeout 3 min)
                     claude_client = Anthropic(api_key=claude_api_key)
                     response = claude_client.messages.create(
                         model="claude-sonnet-4-20250514",
                         max_tokens=16000,
                         system=DOSSIER_SYSTEM_PROMPT,
                         messages=[{"role": "user", "content": content_blocks}],
+                        timeout=180.0,
                     )
-
                     generated_html = response.content[0].text
 
-                    # 5. Nettoyer les balises markdown éventuelles
+                    # ÉTAPE 4 — Nettoyage et injection du logo
+                    st.write("🖼 Injection du logo et finalisation…")
                     generated_html = re.sub(r"^```[^\n]*\n", "", generated_html)
                     generated_html = re.sub(r"\n```\s*$", "", generated_html.strip())
 
-                    # 6. Injecter le logo base64 MAINTENANT (après génération Claude)
                     logo_b64 = st.session_state["dossier_logo_b64"]
                     final_html = generated_html.replace(
                         'src="LOGO_PLACEHOLDER"',
                         f'src="data:image/png;base64,{logo_b64}"',
                     )
 
-                    # 7. Générer le PDF via WeasyPrint
-                    try:
-                        import weasyprint
-                        from io import BytesIO
-                        pdf_buffer = BytesIO()
-                        weasyprint.HTML(string=final_html).write_pdf(pdf_buffer)
-                        st.session_state["dossier_pdf"] = pdf_buffer.getvalue()
-                    except Exception as pdf_err:
-                        st.session_state["dossier_pdf"] = None
-                        st.warning(f"⚠️ Génération PDF indisponible ({pdf_err}). Télécharge le HTML et imprime en PDF via Chrome.")
+                    # ÉTAPE 5 — Injection du bouton "Enregistrer en PDF"
+                    # Ce bouton appelle window.print() du navigateur = PDF parfait, natif, gratuit
+                    print_button_html = """
+<div style="position:fixed;top:20px;right:20px;z-index:9999;background:#FFD700;border-radius:8px;box-shadow:0 4px 15px rgba(0,0,0,0.3);">
+  <button onclick="window.print()" style="background:#FFD700;color:#000;border:none;padding:12px 24px;font-size:14px;font-weight:800;cursor:pointer;border-radius:8px;font-family:sans-serif;letter-spacing:0.5px;">
+    🖨️ Enregistrer en PDF
+  </button>
+</div>
+<style>@media print { .no-print { display:none!important; } }</style>
+<div class="no-print" style="height:0"></div>
+"""
+                    # Insérer juste après <body>
+                    final_html = final_html.replace("<body>", f"<body>\n{print_button_html}", 1)
 
                     st.session_state["dossier_html"] = final_html
-                    st.success("✅ Dossier généré avec succès !")
+                    status.update(label="✅ Dossier généré !", state="complete")
 
                 except Exception as e:
-                    st.error(f"Erreur lors de la génération : {e}")
+                    status.update(label="❌ Erreur", state="error")
+                    st.error(f"Erreur : {e}")
 
     # --- RÉSULTAT : TÉLÉCHARGEMENT + APERÇU ---
     if st.session_state.get("dossier_html"):
         html_content = st.session_state["dossier_html"]
 
-        # Nom de fichier basé sur le candidat
         name_match = re.search(r'class="candidate-name">([^<]+)<', html_content)
         candidate_name = (
             name_match.group(1).strip().replace(" ", "_") if name_match else "candidat"
         )
 
-        dl_col1, dl_col2 = st.columns(2)
+        st.info(
+            "**Comment obtenir le PDF :**  \n"
+            "1. Télécharge le fichier HTML ci-dessous  \n"
+            "2. Ouvre-le dans **Chrome**  \n"
+            "3. Clique le bouton **🖨️ Enregistrer en PDF** en haut à droite de la page  \n"
+            "4. Dans la boîte de dialogue : format A4, sans marges → Enregistrer"
+        )
 
-        with dl_col1:
-            if st.session_state.get("dossier_pdf"):
-                st.download_button(
-                    label="⬇️ Télécharger le Dossier (PDF)",
-                    data=st.session_state["dossier_pdf"],
-                    file_name=f"dossier_{candidate_name}.pdf",
-                    mime="application/pdf",
-                    type="primary",
-                    key="dossier_download_pdf",
-                )
-            else:
-                st.info("PDF non disponible — utilise le téléchargement HTML ci-dessous.")
-
-        with dl_col2:
-            st.download_button(
-                label="⬇️ Télécharger en HTML (backup)",
-                data=html_content,
-                file_name=f"dossier_{candidate_name}.html",
-                mime="text/html",
-                key="dossier_download_html",
-            )
-            st.caption("HTML : ouvre dans Chrome → Ctrl+P → Enregistrer en PDF")
+        st.download_button(
+            label="⬇️ Télécharger le Dossier (.html → PDF via Chrome)",
+            data=html_content,
+            file_name=f"dossier_{candidate_name}.html",
+            mime="text/html",
+            type="primary",
+            key="dossier_download_html",
+        )
 
         with st.expander("👁 Aperçu du dossier"):
             st.components.v1.html(html_content, height=900, scrolling=True)
