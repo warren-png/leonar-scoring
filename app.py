@@ -23,10 +23,10 @@ RÈGLES CRITIQUES ABSOLUES (à respecter sous peine d'échec) :
    - Ne modifie JAMAIS le CSS (couleurs, polices, marges).
    - Garde la structure <div class="page"> exacte (A4, 210mm x 297mm).
 
-2. ⚠️ LOGO — RÈGLE ABSOLUE :
-   - Le template contient des balises <img src="LOGO_PLACEHOLDER" ...>.
-   - Tu dois conserver la chaîne EXACTE src="LOGO_PLACEHOLDER" dans CHAQUE balise img du header.
-   - N'écris PAS src="", N'efface PAS, NE MODIFIE PAS cette chaîne. Elle sera remplacée après coup.
+2. ⚠️ PLACEHOLDERS OPAQUES — RÈGLE ABSOLUE :
+   - Le template contient src="LOGO_PLACEHOLDER" dans les balises <img> : conserve cette chaîne EXACTEMENT, elle sera remplacée après coup.
+   - Le template contient la ligne LINKEDIN_CONTACT_ITEM_PLACEHOLDER dans la contact-bar : conserve-la EXACTEMENT telle quelle, ne la supprime pas, ne la remplace pas.
+   - Dans la .contact-bar de la page 1 : ne mets QUE email et téléphone (+ le placeholder LinkedIn). N'ajoute JAMAIS de ville, localisation, adresse ou tout autre champ.
 
 3. SUPPRESSION DES CITATIONS :
    - Le texte final doit être propre.
@@ -1233,15 +1233,20 @@ with tab2:
                         f'src="data:image/png;base64,{logo_b64}"',
                     )
 
-                    # Injection LinkedIn — regex robuste qui écrase la valeur
-                    # quelle que soit ce que Claude a mis (placeholder ou URL extraite du CV)
+                    # Injection LinkedIn via placeholder opaque — 100% fiable
+                    # Claude ne peut pas modifier une chaîne non-HTML, donc le placeholder
+                    # LINKEDIN_CONTACT_ITEM_PLACEHOLDER arrive intact jusqu'ici
                     if linkedin_url.strip():
-                        final_html = re.sub(
-                            r'(fa-brands fa-linkedin-in[^>]*></i>\s*<a href=")[^"]*(")',
-                            rf'\g<1>{linkedin_url.strip()}\g<2>',
-                            final_html,
+                        li_html = (
+                            '<div class="contact-item">'
+                            '<i class="fa-brands fa-linkedin-in"></i> '
+                            f'<a href="{linkedin_url.strip()}" target="_blank">Profil LinkedIn</a>'
+                            '</div>'
                         )
-                    # Nettoyage des placeholders résiduels
+                    else:
+                        li_html = ""
+                    final_html = final_html.replace("LINKEDIN_CONTACT_ITEM_PLACEHOLDER", li_html)
+                    # Nettoyage résiduel (placeholders ancienne version)
                     final_html = final_html.replace('href="{{LIEN_LINKEDIN}}"', f'href="{linkedin_url.strip() or "#"}"')
                     final_html = final_html.replace('{{LIEN_LINKEDIN}}', linkedin_url.strip() or "#")
 
