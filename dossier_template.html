@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<title>Dossier Candidature</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;700;800&family=Playfair+Display:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+<style>
+/* --- RESET --- */
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-print-color-adjust: exact; }
+body {
+background-color: #555;
+font-family: 'Manrope', sans-serif;
+display: flex;
+flex-direction: column;
+align-items: center;
+padding: 40px 0;
+}
+/* --- CONFIGURATION PAGE A4 --- */
+.page {
+width: 210mm;
+height: 297mm;
+background: white;
+box-shadow: 0 0 20px rgba(0,0,0,0.5);
+margin-bottom: 30px;
+position: relative;
+overflow: hidden;
+display: flex;
+flex-direction: column;
+}
+@media print {
+body { background: none; padding: 0; }
+.page { margin: 0; box-shadow: none; page-break-after: always; height: 297mm; width: 210mm; }
+}
+/* --- HEADER & FOOTER --- */
+.header {
+height: 25mm;
+background: #000;
+display: flex;
+justify-content: space-between;
+align-items: center;
+padding: 0 15mm;
+border-bottom: 2mm solid #FFD700;
+flex-shrink: 0;
+}
+.brand {
+display: flex;
+align-items: center;
+height: 100%;
+}
+.brand img {
+height: 18mm;
+object-fit: contain;
+}
+.doc-title { color: #fff; opacity: 0.9; font-size: 8pt; text-transform: uppercase; letter-spacing: 1px; font-weight: 600; max-width: 250px; text-align: right; }
+.footer {
+position: absolute;
+bottom: 0;
+left: 0;
+width: 100%;
+height: 12mm;
+background: #f8f9fa;
+border-top: 1px solid #ddd;
+display: flex;
+justify-content: center;
+align-items: center;
+font-size: 9pt;
+color: #555;
+}
+.footer a {
+color: #000;
+font-weight: 700;
+text-decoration: none;
+border-bottom: 1px solid #FFD700;
+margin: 0 5px;
+}
+/* --- LAYOUT GLOBAL --- */
+.content { padding: 10mm 12mm 15mm 12mm; flex-grow: 1; display: flex; flex-direction: column; gap: 5mm; }
+/* --- STYLES PAGE 1 --- */
+.candidate-header {
+background: #f8f9fa;
+border-left: 3mm solid #000;
+padding: 6mm;
+margin-bottom: 4mm;
+}
+.candidate-name { font-family: 'Playfair Display', serif; font-size: 24pt; color: #000; margin-bottom: 2mm; line-height: 1; }
+.candidate-role { font-size: 10pt; color: #555; text-transform: uppercase; letter-spacing: 1px; font-weight: 700; }
+.contact-bar {
+margin-top: 4mm;
+padding-top: 3mm;
+border-top: 1px solid #ddd;
+display: flex;
+flex-wrap: wrap;
+gap: 4mm;
+font-size: 9pt;
+color: #333;
+}
+.contact-item { display: flex; align-items: center; }
+.contact-item i { color: #FFD700; background: #000; padding: 3px; border-radius: 50%; font-size: 8px; margin-right: 5px; width: 16px; height: 16px; text-align: center; display: inline-block;}
+.contact-item a { color: #333; text-decoration: none; border-bottom: 1px solid transparent; transition: border-color 0.2s; font-weight: 600; }
+.contact-item a:hover { border-bottom-color: #FFD700; }
+.section-title {
+font-family: 'Playfair Display', serif;
+font-size: 16pt;
+color: #000;
+border-bottom: 1px solid #eee;
+padding-bottom: 1.5mm;
+margin-bottom: 4mm;
+display: flex;
+align-items: center;
+gap: 8px;
+}
+.section-title i { color: #FFD700; }
+.hunter-box {
+background: #000;
+color: #fff;
+padding: 8mm;
+border-radius: 2px;
+position: relative;
+}
+.hunter-text { font-style: italic; font-size: 10.5pt; line-height: 1.5; }
+.quote-mark { position: absolute; top: -5mm; right: 5mm; font-size: 50pt; color: #FFD700; opacity: 0.2; font-family: serif; }
+.points-grid { display: grid; grid-template-columns: 1fr; gap: 4mm; margin-top: 4mm; }
+.point-card { display: flex; gap: 4mm; align-items: flex-start; }
+.point-icon { width: 10mm; height: 10mm; background: #fff; border: 2px solid #FFD700; display: flex; align-items: center; justify-content: center; font-size: 12pt; color: #000; flex-shrink: 0; }
+.point-content h4 { font-size: 10.5pt; font-weight: 800; text-transform: uppercase; margin-bottom: 1px; }
+.point-content p { font-size: 9.5pt; color: #555; line-height: 1.35; }
+/* --- STYLES PAGE 2 --- */
+.score-header { display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 8mm; background: #f8f9fa; padding: 6mm; border-bottom: 4px solid #000; }
+.score-big { font-size: 36pt; font-weight: 800; color: #000; line-height: 1; }
+.score-sub { font-size: 11pt; text-transform: uppercase; color: #555; }
+.score-badge { background: #FFD700; color: #000; padding: 2mm 5mm; font-weight: 800; text-transform: uppercase; font-size: 9pt; display: inline-block; margin-bottom: 5px;}
+.score-table { width: 100%; border-collapse: collapse; }
+.score-table th { text-align: left; padding: 3mm; background: #000; color: #fff; text-transform: uppercase; font-size: 8.5pt; }
+.score-table td { padding: 5mm 3mm; border-bottom: 1px solid #eee; vertical-align: top; }
+.score-cat { width: 30%; font-weight: 800; font-size: 11pt; color: #000; border-right: 4px solid #FFD700; }
+.score-val { width: 15%; font-weight: 800; font-size: 14pt; color: #000; text-align: center; }
+.score-txt { font-size: 9.5pt; color: #444; line-height: 1.4; }
+/* --- STYLES CV --- */
+.cv-grid { display: grid; grid-template-columns: 60mm 1fr; height: 100%; gap: 8mm; }
+.cv-sidebar { background: #f8f9fa; height: 100%; padding: 5mm; border-right: 1px solid #eee; }
+.sidebar-block { margin-bottom: 6mm; }
+.sb-title { font-weight: 800; font-size: 9pt; border-bottom: 2px solid #FFD700; padding-bottom: 1px; margin-bottom: 3mm; display: inline-block; color: #000; }
+.sb-list { list-style: none; font-size: 8.5pt; line-height: 1.35; color: #333; }
+.sb-list li { margin-bottom: 2mm; }
+.sb-list strong { display: block; color: #000; font-weight: 700; margin-bottom: 0px; }
+.timeline { position: relative; border-left: 2px solid #e0e0e0; padding-left: 6mm; margin-left: 3mm; }
+.job { margin-bottom: 6mm; position: relative; }
+.job::before { content: ''; position: absolute; left: -8.5mm; top: 1.5mm; width: 3mm; height: 3mm; background: #FFD700; border: 2px solid #fff; box-shadow: 0 0 0 1px #000; border-radius: 50%; }
+.job-title { font-size: 11pt; font-weight: 800; color: #000; margin-bottom: 1px; }
+.job-company { font-size: 9.5pt; font-weight: 600; color: #555; display: flex; justify-content: space-between; border-bottom: 1px solid #FFD700; padding-bottom: 1mm; margin-bottom: 2mm; }
+.job-desc { font-size: 9pt; line-height: 1.35; color: #333; text-align: justify; }
+.job-desc ul { margin-left: 4mm; margin-top: 1mm; }
+.job-desc li { margin-bottom: 1mm; }
+</style>
+</head>
+<body>
+
+<!-- ========== PAGE 1 : PRÉSENTATION ========== -->
+<div class="page">
+<div class="header">
+  <div class="brand">
+    <img src="LOGO_PLACEHOLDER" alt="Entourage Recrutement">
+  </div>
+  <div class="doc-title">Dossier de Présentation</div>
+</div>
+<div class="content">
+  <div class="candidate-header">
+    <h1 class="candidate-name">{{NOM_CANDIDAT}}</h1>
+    <div class="candidate-role">{{POSTE_CANDIDAT}}</div>
+    <div class="contact-bar">
+      <div class="contact-item"><i class="fa-solid fa-envelope"></i> {{EMAIL}}</div>
+      <div class="contact-item"><i class="fa-solid fa-phone"></i> {{TELEPHONE}}</div>
+      <div class="contact-item"><i class="fa-brands fa-linkedin-in"></i> <a href="{{LIEN_LINKEDIN}}" target="_blank">Profil LinkedIn</a></div>
+    </div>
+  </div>
+  <div style="margin-bottom: 4mm;">
+    <h2 class="section-title"><i class="fa-solid fa-quote-left"></i> Notre Analyse</h2>
+    <div class="hunter-box">
+      <span class="quote-mark">"</span>
+      <p class="hunter-text">
+        {{ANALYSE_TEXTE_ISSUE_DU_BRIEF}}
+      </p>
+    </div>
+  </div>
+  <div>
+    <h2 class="section-title"><i class="fa-solid fa-star"></i> Points Clés &amp; Vigilance</h2>
+    <div class="points-grid">
+      <!-- Claude insère ici les .point-card -->
+    </div>
+  </div>
+</div>
+<div class="footer">
+  {{PIED_DE_PAGE_COMMERCIAL}}
+</div>
+</div>
+
+<!-- ========== PAGE 2 : SCORE CARD ========== -->
+<div class="page">
+<div class="header">
+  <div class="brand">
+    <img src="LOGO_PLACEHOLDER" alt="Entourage Recrutement">
+  </div>
+  <div class="doc-title">SCORE CARD</div>
+</div>
+<div class="content">
+  <div class="score-header">
+    <div>
+      <div class="score-badge">NOTE GLOBALE</div>
+      <div class="score-sub">Fit Poste</div>
+    </div>
+    <div class="score-big">{{NOTE_GLOBALE}} <span style="font-size:20pt; color:#999; font-weight:400">/ 5</span></div>
+  </div>
+  <table class="score-table">
+    <thead>
+      <tr>
+        <th>Critère</th>
+        <th style="text-align:center">Note</th>
+        <th>Notre analyse</th>
+      </tr>
+    </thead>
+    <tbody>
+      <!-- Claude insère ici exactement 4 <tr> avec classes score-cat / score-val / score-txt -->
+    </tbody>
+  </table>
+  <div style="margin-top: 8mm;">
+    <h2 class="section-title"><i class="fa-solid fa-lightbulb"></i> Projets Phares &amp; Adéquation</h2>
+    <div style="background: #f8f9fa; padding: 5mm; border-left: 3mm solid #FFD700; font-size: 9.5pt; line-height: 1.4; color: #333; text-align: justify;">
+      {{TEXTE_PROJETS_PHARES}}
+    </div>
+  </div>
+</div>
+<div class="footer">
+  {{PIED_DE_PAGE_COMMERCIAL}}
+</div>
+</div>
+
+<!-- ========== PAGE 3 : CV ========== -->
+<div class="page">
+<div class="header">
+  <div class="brand">
+    <img src="LOGO_PLACEHOLDER" alt="Entourage Recrutement">
+  </div>
+  <div class="doc-title">CV</div>
+</div>
+<div class="content">
+  <div class="cv-grid">
+    <div class="cv-sidebar">
+      <!-- Claude insère ici les .sidebar-block (coordonnées, formation, compétences, langues…) -->
+    </div>
+    <div class="cv-main">
+      <h2 class="section-title" style="margin-top:0"><i class="fa-solid fa-briefcase"></i> Expériences Professionnelles</h2>
+      <div class="timeline">
+        <!-- Claude insère ici les .job (expériences du CV, dans l'ordre) -->
+      </div>
+    </div>
+  </div>
+</div>
+<div class="footer">
+  {{PIED_DE_PAGE_COMMERCIAL}}
+</div>
+</div>
+
+<!-- Si le CV déborde : Claude crée une PAGE 4 avec le même header/footer et une nouvelle .timeline pour la suite -->
+
+</body>
+</html>

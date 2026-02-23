@@ -5,10 +5,61 @@ import re
 import time
 import os
 import random
+import base64
 from datetime import date
 from pathlib import Path
 from anthropic import Anthropic
 from dotenv import load_dotenv
+
+# ============================================================
+# DOSSIER DE CANDIDATURE — CONSTANTES
+# ============================================================
+DOSSIER_SYSTEM_PROMPT = """Tu es un "Compilateur HTML Strict". Tu n'es PAS un webdesigner.
+TA MISSION : Lire le CV (PDF joint) et le Brief (texte), puis remplir le CODE HTML MAÎTRE fourni.
+
+RÈGLES CRITIQUES ABSOLUES (à respecter sous peine d'échec) :
+
+1. INTERDICTION FORMELLE DE TOUCHER AU DESIGN :
+   - Ne modifie JAMAIS le CSS (couleurs, polices, marges).
+   - Garde la structure <div class="page"> exacte (A4, 210mm x 297mm).
+   - Ne change pas l'image du logo (elle est déjà en base64 dans le src).
+
+2. SUPPRESSION DES CITATIONS :
+   - Le texte final doit être propre.
+   - INTERDICTION de laisser des balises de source, crochets [cite], ou mentions "Source". Supprime-les toutes.
+
+3. LOGIQUE PIED DE PAGE (FOOTER) :
+   - Si "Commercial : Warren" → Écris exactement :
+     Responsable de chasse : <a href="https://www.linkedin.com/in/warren-elbaz/">Warren</a> - 06 50 60 22 61
+   - Si "Commercial : Helder" → Écris exactement :
+     Responsable de chasse : <a href="https://www.linkedin.com/in/helder-alturas-48010463/">Helder</a> - 06 22 30 96 11
+   - Remplace {{PIED_DE_PAGE_COMMERCIAL}} par ce texte dans CHAQUE footer de CHAQUE page.
+
+4. SCORECARD (PAGE 2) :
+   - La note globale ({{NOTE_GLOBALE}}) doit être SUR 5 (ex: 4.5). Jamais sur 10.
+   - Le tableau doit contenir EXACTEMENT 4 lignes <tr> avec les critères fournis.
+   - Pour chaque critère : attribue une note /5 et rédige une analyse concise issue du CV et du brief.
+   - La note globale est la moyenne des 4 notes.
+   - Format d'une ligne : <tr><td class="score-cat">Nom critère</td><td class="score-val">X.X / 5</td><td class="score-txt">Analyse...</td></tr>
+
+5. INTÉGRALITÉ DU CV (PAGES 3, 4 et +) :
+   - Copie le contenu de TOUTES les expériences du CV sans en omettre aucune.
+   - Sidebar (page 3) : coordonnées, formation, compétences, langues, centres d'intérêt.
+   - Expériences : dans la .timeline, crée un .job par poste avec .job-title, .job-company, .job-desc.
+   - GESTION DU DÉBORDEMENT : si le texte est trop long pour la page 3, CRÉE une page 4 (nouvelle <div class="page">) avec le même header (doc-title="CV") et footer, et une nouvelle .timeline pour la suite. Ne coupe jamais une expérience en deux pages.
+
+6. POINTS CLÉS (PAGE 1) :
+   - Dans la .points-grid, insère 3 à 5 .point-card.
+   - Alterne entre points positifs (force) et points de vigilance (à valider).
+   - Format : <div class="point-card"><div class="point-icon"><i class="fa-solid fa-check"></i></div><div class="point-content"><h4>Titre</h4><p>Description</p></div></div>
+
+7. OUTPUT :
+   - Retourne UNIQUEMENT le code HTML complet, sans balises markdown (pas de ```html), sans explications.
+   - Le fichier doit être directement utilisable dans un navigateur.
+"""
+
+_template_path = Path(__file__).parent / "dossier_template.html"
+HTML_MASTER_TEMPLATE = _template_path.read_text(encoding="utf-8") if _template_path.exists() else ""
 
 # ============================================================
 # CONFIG
@@ -504,485 +555,661 @@ with st.sidebar:
     st.divider()
     st.caption(f"💰 Coût scoring estimé : ~{max_profiles * 0.002:.2f}€")
 
-# ============================================================
-# ÉTAPE 1 — BRIEF
-# ============================================================
-st.header("1️⃣ Brief du poste")
-
-col1, col2 = st.columns(2)
-with col1:
-    job_desc = st.text_area("Descriptif de poste", height=250, placeholder="Missions, compétences, formation...")
-with col2:
-    transcript = st.text_area("Retranscription brief manager", height=250, placeholder="Retranscription audio...")
-
-col3, col4 = st.columns(2)
-with col3:
-    region = st.text_input("Région / Localisation", placeholder="Ex: Île-de-France, Lyon, PACA...")
-with col4:
-    seniority = st.text_input("Séniorité (années d'expérience)", placeholder="Ex: 5-10 ans")
-
-exclusion_keywords = st.text_area(
-    "🚫 Exclusions supplémentaires",
-    height=80,
-    placeholder="Un mot-clé par ligne. Ex:\ncabinet d'audit\nconseil\nintérim"
-)
 
 # ============================================================
-# ÉTAPE 2 — EXTRACTION CRITÈRES
+# ONGLETS PRINCIPAUX
 # ============================================================
-st.header("2️⃣ Critères de recherche")
+tab1, tab2 = st.tabs(["🎯 Recherche & Scoring", "📄 Dossier de Candidature"])
 
-if st.button("🔍 Analyser le brief", type="primary"):
-    if not job_desc:
-        st.error("Le descriptif de poste est obligatoire.")
-    else:
-        with st.spinner("Claude analyse le brief..."):
-            try:
-                claude_client = Anthropic(api_key=claude_api_key)
-                criteria = extract_search_criteria(claude_client, job_desc, transcript, region, seniority)
-                st.session_state["criteria"] = criteria
-                st.session_state["scoring_done"] = False
-                st.success("Critères extraits !")
-            except Exception as e:
-                st.error(f"Erreur : {e}")
+with tab1:
+    # ============================================================
+    # ÉTAPE 1 — BRIEF
+    # ============================================================
+    st.header("1️⃣ Brief du poste")
 
-if "criteria" in st.session_state:
-    criteria = st.session_state["criteria"]
-    
-    st.subheader("Critères (modifiables avant recherche)")
-    
-    col_a, col_b, col_c = st.columns(3)
-    with col_a:
-        edited_titles_include = st.text_area(
-            "✅ Titres de poste (inclure)",
-            value="\n".join(criteria.get("job_titles", {}).get("include", [])),
-            height=100
-        )
-        edited_titles_exclude = st.text_area(
-            "❌ Titres de poste (exclure)",
-            value="\n".join(criteria.get("job_titles", {}).get("exclude", [])),
-            height=80
-        )
-    with col_b:
-        edited_keywords = st.text_area(
-            "🔑 Mots-clés",
-            value="\n".join(criteria.get("keywords", {}).get("include", [])),
-            height=100
-        )
-        edited_regions = st.text_area(
-            "📍 Régions",
-            value="\n".join(criteria.get("locations", {}).get("regions", [])),
-            height=80
-        )
-    with col_c:
-        edited_companies_exclude = st.text_area(
-            "🚫 Entreprises à exclure",
-            value="\n".join(criteria.get("companies", {}).get("exclude", [])),
-            height=100
-        )
-        edited_keywords_exclude = st.text_area(
-            "🚫 Mots-clés à exclure",
-            value="\n".join(criteria.get("keywords", {}).get("exclude", [])),
-            height=80
-        )
-    
-    # XP — affiché sous les colonnes
-    col_xp1, col_xp2, col_xp3 = st.columns([1, 1, 2])
-    with col_xp1:
-        exp_min = st.number_input("XP min (années)", value=criteria.get("years_experience", {}).get("min", 0))
-    with col_xp2:
-        exp_max = st.number_input("XP max (années)", value=criteria.get("years_experience", {}).get("max", 0))
-    
-    exclusion_list = [k.strip() for k in exclusion_keywords.split("\n") if k.strip()]
+    col1, col2 = st.columns(2)
+    with col1:
+        job_desc = st.text_area("Descriptif de poste", height=250, placeholder="Missions, compétences, formation...")
+    with col2:
+        transcript = st.text_area("Retranscription brief manager", height=250, placeholder="Retranscription audio...")
 
-    # Champ boolean query — visible uniquement pour LinkedIn
-    edited_boolean_query = ""
-    if source_type == "linkedin":
-        edited_boolean_query = st.text_area(
-            "🔍 Boolean Query LinkedIn",
-            value=criteria.get("boolean_query", ""),
-            height=80,
-            help='Opérateurs AND OR NOT en MAJUSCULES. Guillemets autour des expressions multi-mots. Ex: ("directeur commercial" OR "sales director") AND (assurance OR IARD)'
-        )
-        bq_len = len(edited_boolean_query.strip())
-        if bq_len == 0:
-            st.caption("💡 Query vide — la recherche s'appuiera uniquement sur les titres et filtres")
-        elif bq_len < 1000:
-            st.caption(f"✅ {bq_len} caractères — longueur optimale")
-        elif bq_len < 1500:
-            st.caption(f"🟡 {bq_len} caractères — acceptable, mais simplifier si possible")
+    col3, col4 = st.columns(2)
+    with col3:
+        region = st.text_input("Région / Localisation", placeholder="Ex: Île-de-France, Lyon, PACA...")
+    with col4:
+        seniority = st.text_input("Séniorité (années d'expérience)", placeholder="Ex: 5-10 ans")
+
+    exclusion_keywords = st.text_area(
+        "🚫 Exclusions supplémentaires",
+        height=80,
+        placeholder="Un mot-clé par ligne. Ex:\ncabinet d'audit\nconseil\nintérim"
+    )
+
+    # ============================================================
+    # ÉTAPE 2 — EXTRACTION CRITÈRES
+    # ============================================================
+    st.header("2️⃣ Critères de recherche")
+
+    if st.button("🔍 Analyser le brief", type="primary"):
+        if not job_desc:
+            st.error("Le descriptif de poste est obligatoire.")
         else:
-            st.warning(f"🔴 {bq_len} caractères — query trop longue, risque de rejet par LinkedIn (max ~1 500). Simplifiez.")
-        if "'" in edited_boolean_query:
-            st.warning("⚠️ La query contient des apostrophes (`'`) dans des phrases — LinkedIn peut rejeter cette syntaxe. Le sanitizer les supprimera automatiquement avant l'envoi.")
+            with st.spinner("Claude analyse le brief..."):
+                try:
+                    claude_client = Anthropic(api_key=claude_api_key)
+                    criteria = extract_search_criteria(claude_client, job_desc, transcript, region, seniority)
+                    st.session_state["criteria"] = criteria
+                    st.session_state["scoring_done"] = False
+                    st.success("Critères extraits !")
+                except Exception as e:
+                    st.error(f"Erreur : {e}")
 
-    st.info(f"📋 {criteria.get('summary', '')}")
+    if "criteria" in st.session_state:
+        criteria = st.session_state["criteria"]
 
-    # ============================================================
-    # ÉTAPE 3 — RECHERCHE & SCORING
-    # ============================================================
-    st.header("3️⃣ Recherche & Scoring")
-    
-    st.subheader("Projet Leonar")
-    st.caption("💡 Copie l'ID depuis l'URL Leonar : app.leonar.app/projects/**ID_ICI**")
-    selected_project_id = st.text_input("ID du projet", placeholder="550e8400-e29b-41d4-a716-...")
+        st.subheader("Critères (modifiables avant recherche)")
 
-    if selected_project_id and st.button("🚀 Lancer recherche + scoring", type="primary"):
-        
-        all_profiles = []
-        
-        # ---- Construire les paramètres de recherche ----
-        titles_inc = [t.strip() for t in edited_titles_include.split("\n") if t.strip()]
-        titles_exc = [t.strip() for t in edited_titles_exclude.split("\n") if t.strip()]
-        kw_inc = [k.strip() for k in edited_keywords.split("\n") if k.strip()]
-        kw_exc = [k.strip() for k in edited_keywords_exclude.split("\n") if k.strip()]
-        kw_exc.extend(exclusion_list)
-        kw_exc = list(set(kw_exc))
-        companies_exc = [c.strip() for c in edited_companies_exclude.split("\n") if c.strip()]
-        regions_list = [r.strip() for r in edited_regions.split("\n") if r.strip()]
-        years_exp = {"min": int(exp_min), "max": int(exp_max)}
-        
-        # ---- PHASE 1 : RECHERCHE ----
-        st.subheader("Phase 1 — Recherche")
-        progress_bar = st.progress(0, text="Recherche en cours...")
-        
-        try:
-            if source_type == "linkedin":
-                # === LINKEDIN : endpoint dédié ===
-                
-                # 0. Vérifier la limite quotidienne
-                linkedin_used = get_linkedin_count()
-                remaining = LINKEDIN_DAILY_LIMIT - linkedin_used
-                if remaining <= 0:
-                    st.error(f"🚫 Limite LinkedIn quotidienne atteinte ({LINKEDIN_DAILY_LIMIT} profils). Réessaie demain ou utilise Leonar Source.")
-                    st.stop()
-                if max_profiles > remaining:
-                    st.warning(f"⚠️ Il te reste {remaining} profils LinkedIn aujourd'hui. Recherche limitée à {remaining}.")
-                    max_profiles = remaining
-                
-                # 1. Résoudre les IDs de localisation
-                location_ids = {}
-                if regions_list and linkedin_account_id:
-                    with st.spinner("Résolution des localisations LinkedIn..."):
-                        for region_name in regions_list:
-                            results = linkedin_lookup_locations(region_name, linkedin_account_id)
-                            if results:
-                                # Prendre le premier résultat
-                                loc = results[0]
-                                location_ids[loc["id"]] = loc["title"]
-                                st.caption(f"📍 {region_name} → {loc['title']} (ID: {loc['id']})")
-                            else:
-                                st.warning(f"⚠️ Localisation '{region_name}' non trouvée sur LinkedIn")
-                
-                # 2. Boolean query — directement depuis le champ UI (édité par l'utilisateur ou extrait par Claude)
-                boolean_query = sanitize_boolean_query(edited_boolean_query) if edited_boolean_query.strip() else None
-                if boolean_query:
-                    st.caption(f"🔍 Boolean query envoyée : `{boolean_query}`")
+        col_a, col_b, col_c = st.columns(3)
+        with col_a:
+            edited_titles_include = st.text_area(
+                "✅ Titres de poste (inclure)",
+                value="\n".join(criteria.get("job_titles", {}).get("include", [])),
+                height=100
+            )
+            edited_titles_exclude = st.text_area(
+                "❌ Titres de poste (exclure)",
+                value="\n".join(criteria.get("job_titles", {}).get("exclude", [])),
+                height=80
+            )
+        with col_b:
+            edited_keywords = st.text_area(
+                "🔑 Mots-clés",
+                value="\n".join(criteria.get("keywords", {}).get("include", [])),
+                height=100
+            )
+            edited_regions = st.text_area(
+                "📍 Régions",
+                value="\n".join(criteria.get("locations", {}).get("regions", [])),
+                height=80
+            )
+        with col_c:
+            edited_companies_exclude = st.text_area(
+                "🚫 Entreprises à exclure",
+                value="\n".join(criteria.get("companies", {}).get("exclude", [])),
+                height=100
+            )
+            edited_keywords_exclude = st.text_area(
+                "🚫 Mots-clés à exclure",
+                value="\n".join(criteria.get("keywords", {}).get("exclude", [])),
+                height=80
+            )
 
-                # Debug : afficher le payload complet avant envoi (miroir exact de ce qui est envoyé)
-                with st.expander("🛠 Debug — payload envoyé à l'API"):
-                    debug_payload = {
-                        "project_id": selected_project_id,
-                        "account_id": linkedin_account_id,
-                        "boolean_query": boolean_query,
-                        "location_ids": list(location_ids.keys()) if location_ids else None,
-                        "job_titles": titles_inc if titles_inc else None,
-                    }
-                    if years_exp.get("min", 0) > 0 or years_exp.get("max", 0) > 0:
-                        debug_payload["years_experience"] = years_exp
-                    st.json(debug_payload)
+        # XP — affiché sous les colonnes
+        col_xp1, col_xp2, col_xp3 = st.columns([1, 1, 2])
+        with col_xp1:
+            exp_min = st.number_input("XP min (années)", value=criteria.get("years_experience", {}).get("min", 0))
+        with col_xp2:
+            exp_max = st.number_input("XP max (années)", value=criteria.get("years_experience", {}).get("max", 0))
 
-                # 3. Recherche paginée avec délais humains
-                page = 1
-                while len(all_profiles) < max_profiles:
-                    # Vérifier la limite avant chaque page
-                    if get_linkedin_count() >= LINKEDIN_DAILY_LIMIT:
-                        st.warning("⚠️ Limite LinkedIn quotidienne atteinte en cours de recherche. Arrêt.")
-                        break
+        exclusion_list = [k.strip() for k in exclusion_keywords.split("\n") if k.strip()]
 
-                    results = linkedin_search(
-                        project_id=selected_project_id,
-                        account_id=linkedin_account_id,
-                        job_titles=titles_inc,
-                        location_ids=location_ids if location_ids else None,
-                        years_experience=years_exp,
-                        boolean_query=boolean_query,
-                        page=page,
-                        page_size=25
-                    )
-                    
-                    profiles = results.get("profiles", [])
-                    if not profiles:
-                        break
-                    
-                    # Comptabiliser les profils consultés
-                    add_linkedin_count(len(profiles))
-                    
-                    # Filtrer les profils déjà dans le projet (flag LinkedIn)
-                    profiles = [p for p in profiles if not p.get("already_in_project", False)]
-                    all_profiles.extend(profiles)
-                    
-                    total = results.get("total_count", len(all_profiles))
-                    linkedin_now = get_linkedin_count()
-                    progress = min(len(all_profiles) / max_profiles, 1.0)
-                    progress_bar.progress(progress, text=f"{len(all_profiles)} profils récupérés sur {total} | LinkedIn: {linkedin_now}/{LINKEDIN_DAILY_LIMIT}")
-                    
-                    if not results.get("has_more", False):
-                        break
-                    
-                    page += 1
-                    # Délai aléatoire pour simuler un comportement humain
-                    time.sleep(random.uniform(2.0, 4.0))
-            
+        # Champ boolean query — visible uniquement pour LinkedIn
+        edited_boolean_query = ""
+        if source_type == "linkedin":
+            edited_boolean_query = st.text_area(
+                "🔍 Boolean Query LinkedIn",
+                value=criteria.get("boolean_query", ""),
+                height=80,
+                help='Opérateurs AND OR NOT en MAJUSCULES. Guillemets autour des expressions multi-mots. Ex: ("directeur commercial" OR "sales director") AND (assurance OR IARD)'
+            )
+            bq_len = len(edited_boolean_query.strip())
+            if bq_len == 0:
+                st.caption("💡 Query vide — la recherche s'appuiera uniquement sur les titres et filtres")
+            elif bq_len < 1000:
+                st.caption(f"✅ {bq_len} caractères — longueur optimale")
+            elif bq_len < 1500:
+                st.caption(f"🟡 {bq_len} caractères — acceptable, mais simplifier si possible")
             else:
-                # === LEONAR SOURCE / CONTACTS CRM ===
-                filters = {}
-                
-                if titles_inc or titles_exc:
-                    filters["job_titles"] = {}
-                    if titles_inc:
-                        filters["job_titles"]["include"] = titles_inc
-                    if titles_exc:
-                        filters["job_titles"]["exclude"] = titles_exc
-                
-                if kw_inc or kw_exc:
-                    filters["keywords"] = {}
-                    if kw_inc:
-                        filters["keywords"]["include"] = kw_inc
-                    if kw_exc:
-                        filters["keywords"]["exclude"] = kw_exc
-                
-                countries = criteria.get("locations", {}).get("countries", ["France"])
-                filters["locations"] = {"countries": countries}
-                if regions_list:
-                    filters["locations"]["states"] = regions_list
-                
-                filters["years_experience"] = years_exp
-                
-                if companies_exc:
-                    filters["companies"] = {"exclude": companies_exc}
-                
-                if source_type == "contacts":
-                    if "contacts_filters" not in filters:
-                        filters["contacts_filters"] = {}
-                    filters["contacts_filters"]["contact_types"] = ["candidate"]
-                
-                page = 1
-                while len(all_profiles) < max_profiles:
-                    results = sourcing_search(
-                        project_id=selected_project_id,
-                        filters=filters,
-                        source_type=source_type,
-                        page=page,
-                        page_size=25
+                st.warning(f"🔴 {bq_len} caractères — query trop longue, risque de rejet par LinkedIn (max ~1 500). Simplifiez.")
+            if "'" in edited_boolean_query:
+                st.warning("⚠️ La query contient des apostrophes (`'`) dans des phrases — LinkedIn peut rejeter cette syntaxe. Le sanitizer les supprimera automatiquement avant l'envoi.")
+
+        st.info(f"📋 {criteria.get('summary', '')}")
+
+        # ============================================================
+        # ÉTAPE 3 — RECHERCHE & SCORING
+        # ============================================================
+        st.header("3️⃣ Recherche & Scoring")
+
+        st.subheader("Projet Leonar")
+        st.caption("💡 Copie l'ID depuis l'URL Leonar : app.leonar.app/projects/**ID_ICI**")
+        selected_project_id = st.text_input("ID du projet", placeholder="550e8400-e29b-41d4-a716-...")
+
+        if selected_project_id and st.button("🚀 Lancer recherche + scoring", type="primary"):
+
+            all_profiles = []
+
+            # ---- Construire les paramètres de recherche ----
+            titles_inc = [t.strip() for t in edited_titles_include.split("\n") if t.strip()]
+            titles_exc = [t.strip() for t in edited_titles_exclude.split("\n") if t.strip()]
+            kw_inc = [k.strip() for k in edited_keywords.split("\n") if k.strip()]
+            kw_exc = [k.strip() for k in edited_keywords_exclude.split("\n") if k.strip()]
+            kw_exc.extend(exclusion_list)
+            kw_exc = list(set(kw_exc))
+            companies_exc = [c.strip() for c in edited_companies_exclude.split("\n") if c.strip()]
+            regions_list = [r.strip() for r in edited_regions.split("\n") if r.strip()]
+            years_exp = {"min": int(exp_min), "max": int(exp_max)}
+
+            # ---- PHASE 1 : RECHERCHE ----
+            st.subheader("Phase 1 — Recherche")
+            progress_bar = st.progress(0, text="Recherche en cours...")
+
+            try:
+                if source_type == "linkedin":
+                    # === LINKEDIN : endpoint dédié ===
+
+                    # 0. Vérifier la limite quotidienne
+                    linkedin_used = get_linkedin_count()
+                    remaining = LINKEDIN_DAILY_LIMIT - linkedin_used
+                    if remaining <= 0:
+                        st.error(f"🚫 Limite LinkedIn quotidienne atteinte ({LINKEDIN_DAILY_LIMIT} profils). Réessaie demain ou utilise Leonar Source.")
+                        st.stop()
+                    if max_profiles > remaining:
+                        st.warning(f"⚠️ Il te reste {remaining} profils LinkedIn aujourd'hui. Recherche limitée à {remaining}.")
+                        max_profiles = remaining
+
+                    # 1. Résoudre les IDs de localisation
+                    location_ids = {}
+                    if regions_list and linkedin_account_id:
+                        with st.spinner("Résolution des localisations LinkedIn..."):
+                            for region_name in regions_list:
+                                results = linkedin_lookup_locations(region_name, linkedin_account_id)
+                                if results:
+                                    # Prendre le premier résultat
+                                    loc = results[0]
+                                    location_ids[loc["id"]] = loc["title"]
+                                    st.caption(f"📍 {region_name} → {loc['title']} (ID: {loc['id']})")
+                                else:
+                                    st.warning(f"⚠️ Localisation '{region_name}' non trouvée sur LinkedIn")
+
+                    # 2. Boolean query — directement depuis le champ UI (édité par l'utilisateur ou extrait par Claude)
+                    boolean_query = sanitize_boolean_query(edited_boolean_query) if edited_boolean_query.strip() else None
+                    if boolean_query:
+                        st.caption(f"🔍 Boolean query envoyée : `{boolean_query}`")
+
+                    # Debug : afficher le payload complet avant envoi (miroir exact de ce qui est envoyé)
+                    with st.expander("🛠 Debug — payload envoyé à l'API"):
+                        debug_payload = {
+                            "project_id": selected_project_id,
+                            "account_id": linkedin_account_id,
+                            "boolean_query": boolean_query,
+                            "location_ids": list(location_ids.keys()) if location_ids else None,
+                            "job_titles": titles_inc if titles_inc else None,
+                        }
+                        if years_exp.get("min", 0) > 0 or years_exp.get("max", 0) > 0:
+                            debug_payload["years_experience"] = years_exp
+                        st.json(debug_payload)
+
+                    # 3. Recherche paginée avec délais humains
+                    page = 1
+                    while len(all_profiles) < max_profiles:
+                        # Vérifier la limite avant chaque page
+                        if get_linkedin_count() >= LINKEDIN_DAILY_LIMIT:
+                            st.warning("⚠️ Limite LinkedIn quotidienne atteinte en cours de recherche. Arrêt.")
+                            break
+
+                        results = linkedin_search(
+                            project_id=selected_project_id,
+                            account_id=linkedin_account_id,
+                            job_titles=titles_inc,
+                            location_ids=location_ids if location_ids else None,
+                            years_experience=years_exp,
+                            boolean_query=boolean_query,
+                            page=page,
+                            page_size=25
+                        )
+
+                        profiles = results.get("profiles", [])
+                        if not profiles:
+                            break
+
+                        # Comptabiliser les profils consultés
+                        add_linkedin_count(len(profiles))
+
+                        # Filtrer les profils déjà dans le projet (flag LinkedIn)
+                        profiles = [p for p in profiles if not p.get("already_in_project", False)]
+                        all_profiles.extend(profiles)
+
+                        total = results.get("total_count", len(all_profiles))
+                        linkedin_now = get_linkedin_count()
+                        progress = min(len(all_profiles) / max_profiles, 1.0)
+                        progress_bar.progress(progress, text=f"{len(all_profiles)} profils récupérés sur {total} | LinkedIn: {linkedin_now}/{LINKEDIN_DAILY_LIMIT}")
+
+                        if not results.get("has_more", False):
+                            break
+
+                        page += 1
+                        # Délai aléatoire pour simuler un comportement humain
+                        time.sleep(random.uniform(2.0, 4.0))
+
+                else:
+                    # === LEONAR SOURCE / CONTACTS CRM ===
+                    filters = {}
+
+                    if titles_inc or titles_exc:
+                        filters["job_titles"] = {}
+                        if titles_inc:
+                            filters["job_titles"]["include"] = titles_inc
+                        if titles_exc:
+                            filters["job_titles"]["exclude"] = titles_exc
+
+                    if kw_inc or kw_exc:
+                        filters["keywords"] = {}
+                        if kw_inc:
+                            filters["keywords"]["include"] = kw_inc
+                        if kw_exc:
+                            filters["keywords"]["exclude"] = kw_exc
+
+                    countries = criteria.get("locations", {}).get("countries", ["France"])
+                    filters["locations"] = {"countries": countries}
+                    if regions_list:
+                        filters["locations"]["states"] = regions_list
+
+                    filters["years_experience"] = years_exp
+
+                    if companies_exc:
+                        filters["companies"] = {"exclude": companies_exc}
+
+                    if source_type == "contacts":
+                        if "contacts_filters" not in filters:
+                            filters["contacts_filters"] = {}
+                        filters["contacts_filters"]["contact_types"] = ["candidate"]
+
+                    page = 1
+                    while len(all_profiles) < max_profiles:
+                        results = sourcing_search(
+                            project_id=selected_project_id,
+                            filters=filters,
+                            source_type=source_type,
+                            page=page,
+                            page_size=25
+                        )
+
+                        profiles = results.get("profiles", [])
+                        if not profiles:
+                            break
+
+                        all_profiles.extend(profiles)
+                        total = results.get("total_count", len(all_profiles))
+                        progress = min(len(all_profiles) / max_profiles, 1.0)
+                        progress_bar.progress(progress, text=f"{len(all_profiles)} profils récupérés sur {total} disponibles")
+
+                        if not results.get("has_more", False):
+                            break
+
+                        page += 1
+                        time.sleep(0.5)
+
+                    if results.get("filters_too_strict"):
+                        st.warning("⚠️ Leonar indique que les filtres sont trop stricts.")
+
+                all_profiles = all_profiles[:max_profiles]
+                progress_bar.progress(1.0, text=f"✅ {len(all_profiles)} profils récupérés")
+
+            except Exception as e:
+                st.error(f"Erreur recherche : {e}")
+                st.stop()
+
+            if not all_profiles:
+                st.warning("Aucun profil trouvé. Élargis tes critères.")
+                st.stop()
+
+            # ---- DÉDOUBLONNAGE ----
+            before = len(all_profiles)
+            all_profiles = deduplicate_profiles(all_profiles)
+            if before > len(all_profiles):
+                st.info(f"🔄 {before - len(all_profiles)} doublons supprimés")
+
+            # ---- EXCLUSION PROFILS EXISTANTS ----
+            with st.spinner("Vérification des profils déjà dans le projet..."):
+                try:
+                    existing = get_project_entries(selected_project_id)
+                    if existing:
+                        all_profiles, skipped = exclude_existing_profiles(all_profiles, existing)
+                        if skipped > 0:
+                            st.info(f"♻️ {skipped} profils déjà dans le projet retirés")
+                except Exception as e:
+                    st.warning(f"Impossible de vérifier les existants : {e}")
+
+            # ---- FILTRE LOCALISATION POST-RECHERCHE (filet de sécurité) ----
+            if region and source_type != "linkedin":
+                all_profiles, excluded_loc = filter_by_location(all_profiles, region)
+                if excluded_loc:
+                    st.info(f"📍 {len(excluded_loc)} profils hors {region} retirés")
+
+            if not all_profiles:
+                st.warning("Aucun profil restant après filtrage.")
+                st.stop()
+
+            # ---- PHASE 2 : SCORING ----
+            st.subheader(f"Phase 2 — Scoring de {len(all_profiles)} profils")
+
+            claude_client = Anthropic(api_key=claude_api_key)
+            all_scores = []
+            batch_size = 10
+            scoring_progress = st.progress(0, text="Scoring en cours...")
+
+            try:
+                for i in range(0, len(all_profiles), batch_size):
+                    batch = all_profiles[i:i+batch_size]
+                    scores = score_profiles(
+                        claude_client, batch, job_desc, transcript,
+                        criteria.get("summary", ""), region, exclusion_list
                     )
-                    
-                    profiles = results.get("profiles", [])
-                    if not profiles:
-                        break
-                    
-                    all_profiles.extend(profiles)
-                    total = results.get("total_count", len(all_profiles))
-                    progress = min(len(all_profiles) / max_profiles, 1.0)
-                    progress_bar.progress(progress, text=f"{len(all_profiles)} profils récupérés sur {total} disponibles")
-                    
-                    if not results.get("has_more", False):
-                        break
-                    
-                    page += 1
-                    time.sleep(0.5)
-                
-                if results.get("filters_too_strict"):
-                    st.warning("⚠️ Leonar indique que les filtres sont trop stricts.")
-            
-            all_profiles = all_profiles[:max_profiles]
-            progress_bar.progress(1.0, text=f"✅ {len(all_profiles)} profils récupérés")
-            
-        except Exception as e:
-            st.error(f"Erreur recherche : {e}")
-            st.stop()
-        
-        if not all_profiles:
-            st.warning("Aucun profil trouvé. Élargis tes critères.")
-            st.stop()
-        
-        # ---- DÉDOUBLONNAGE ----
-        before = len(all_profiles)
-        all_profiles = deduplicate_profiles(all_profiles)
-        if before > len(all_profiles):
-            st.info(f"🔄 {before - len(all_profiles)} doublons supprimés")
-        
-        # ---- EXCLUSION PROFILS EXISTANTS ----
-        with st.spinner("Vérification des profils déjà dans le projet..."):
-            try:
-                existing = get_project_entries(selected_project_id)
-                if existing:
-                    all_profiles, skipped = exclude_existing_profiles(all_profiles, existing)
-                    if skipped > 0:
-                        st.info(f"♻️ {skipped} profils déjà dans le projet retirés")
-            except Exception as e:
-                st.warning(f"Impossible de vérifier les existants : {e}")
-        
-        # ---- FILTRE LOCALISATION POST-RECHERCHE (filet de sécurité) ----
-        if region and source_type != "linkedin":
-            all_profiles, excluded_loc = filter_by_location(all_profiles, region)
-            if excluded_loc:
-                st.info(f"📍 {len(excluded_loc)} profils hors {region} retirés")
-        
-        if not all_profiles:
-            st.warning("Aucun profil restant après filtrage.")
-            st.stop()
-        
-        # ---- PHASE 2 : SCORING ----
-        st.subheader(f"Phase 2 — Scoring de {len(all_profiles)} profils")
-        
-        claude_client = Anthropic(api_key=claude_api_key)
-        all_scores = []
-        batch_size = 10
-        scoring_progress = st.progress(0, text="Scoring en cours...")
-        
-        try:
-            for i in range(0, len(all_profiles), batch_size):
-                batch = all_profiles[i:i+batch_size]
-                scores = score_profiles(
-                    claude_client, batch, job_desc, transcript,
-                    criteria.get("summary", ""), region, exclusion_list
-                )
-                all_scores.extend(scores)
-                
-                progress = min((i + batch_size) / len(all_profiles), 1.0)
-                scoring_progress.progress(progress, text=f"{min(i+batch_size, len(all_profiles))}/{len(all_profiles)} profils scorés")
-                time.sleep(0.3)
-            
-            scoring_progress.progress(1.0, text=f"✅ {len(all_scores)} profils scorés")
-        except Exception as e:
-            st.error(f"Erreur scoring : {e}")
-            st.stop()
-        
-        # Fusionner
-        scores_map = {s["profile_id"]: s for s in all_scores}
-        scored_profiles = []
-        for p in all_profiles:
-            pid = p.get("profile_id", "")
-            score_data = scores_map.get(pid, {"score": 0, "justification": "Non scoré"})
-            scored_profiles.append({**p, "score": score_data["score"], "justification": score_data["justification"]})
-        
-        scored_profiles.sort(key=lambda x: x["score"], reverse=True)
-        
-        st.session_state["scored_profiles"] = scored_profiles
-        st.session_state["selected_project_id"] = selected_project_id
-        st.session_state["scoring_done"] = True
+                    all_scores.extend(scores)
 
-    # ============================================================
-    # RÉSULTATS
-    # ============================================================
-    if st.session_state.get("scoring_done"):
-        scored_profiles = st.session_state["scored_profiles"]
-        
-        visible = [p for p in scored_profiles if p["score"] >= score_threshold]
-        hidden = len(scored_profiles) - len(visible)
-        
-        st.subheader(f"Résultats — {len(visible)} profils ≥ {score_threshold}/10")
-        if hidden > 0:
-            st.caption(f"({hidden} profils sous le seuil masqués)")
-        
-        for p in visible:
-            score = p["score"]
-            emoji = "🟢" if score >= 8 else "🟡" if score >= 6 else "🟠" if score >= 4 else "🔴"
-            
-            skills_preview = ", ".join(p.get("skills", [])[:5]) if p.get("skills") else ""
-            xp = f" | {p.get('total_years_experience', '?')} ans XP" if p.get("total_years_experience") else ""
-            
-            with st.expander(f"{emoji} **{score}/10** — {(p.get('first_name') or '')} {(p.get('last_name') or '')} | {p.get('headline', '')}{xp}"):
-                col_l, col_r = st.columns([2, 1])
-                with col_l:
-                    st.write(f"💬 {p['justification']}")
-                    st.write(f"📍 {p.get('location', 'N/A')}")
-                    if p.get("experiences"):
-                        for exp in p["experiences"][:3]:
-                            current = " ✅" if exp.get("is_current") else ""
-                            period = f" ({exp.get('start_date', '')} → {exp.get('end_date', 'présent')})" if exp.get("start_date") else ""
-                            st.write(f"  • {exp.get('title', '')} @ {exp.get('company_name', '')}{current}{period}")
-                    if p.get("educations"):
-                        for edu in p["educations"][:2]:
-                            st.write(f"  🎓 {edu.get('diploma', '')} {edu.get('specialization', '')} — {edu.get('educational_establishment', '')}")
-                with col_r:
-                    if skills_preview:
-                        st.write(f"🛠 {skills_preview}")
-                    if p.get("linkedin_url"):
-                        st.write(f"🔗 [LinkedIn]({p['linkedin_url']})")
-                    else:
-                        st.write("⚠️ Pas de LinkedIn")
+                    progress = min((i + batch_size) / len(all_profiles), 1.0)
+                    scoring_progress.progress(progress, text=f"{min(i+batch_size, len(all_profiles))}/{len(all_profiles)} profils scorés")
+                    time.sleep(0.3)
+
+                scoring_progress.progress(1.0, text=f"✅ {len(all_scores)} profils scorés")
+            except Exception as e:
+                st.error(f"Erreur scoring : {e}")
+                st.stop()
+
+            # Fusionner
+            scores_map = {s["profile_id"]: s for s in all_scores}
+            scored_profiles = []
+            for p in all_profiles:
+                pid = p.get("profile_id", "")
+                score_data = scores_map.get(pid, {"score": 0, "justification": "Non scoré"})
+                scored_profiles.append({**p, "score": score_data["score"], "justification": score_data["justification"]})
+
+            scored_profiles.sort(key=lambda x: x["score"], reverse=True)
+
+            st.session_state["scored_profiles"] = scored_profiles
+            st.session_state["selected_project_id"] = selected_project_id
+            st.session_state["scoring_done"] = True
 
         # ============================================================
-        # ÉTAPE 4 — PUSH LEONAR
+        # RÉSULTATS
         # ============================================================
-        st.header("4️⃣ Envoyer dans Leonar")
-        
-        min_score_push = st.slider("Score minimum pour push", 0, 10, score_threshold)
-        profiles_to_push = [p for p in scored_profiles if p["score"] >= min_score_push]
-        st.info(f"{len(profiles_to_push)} profils seront ajoutés (score ≥ {min_score_push}/10)")
-        
-        if st.button(f"📤 Ajouter {len(profiles_to_push)} profils dans Leonar", type="primary"):
-            project_id = st.session_state.get("selected_project_id")
-            push_progress = st.progress(0, text="Ajout en cours...")
-            
-            try:
-                added_total = 0
-                contact_ids = []
-                
-                profiles_payload = []
-                for p in profiles_to_push:
-                    profile_data = {
-                        "profile_id": p.get("profile_id"),
-                        "first_name": (p.get("first_name") or ""),
-                        "last_name": (p.get("last_name") or ""),
-                        "headline": p.get("headline", ""),
-                        "linkedin_url": p.get("linkedin_url", ""),
-                        "location": p.get("location", ""),
-                    }
-                    if p.get("current_job"):
-                        profile_data["current_job"] = p["current_job"]
-                    if p.get("experiences"):
-                        profile_data["experiences"] = p["experiences"]
-                    if p.get("educations"):
-                        profile_data["educations"] = p["educations"]
-                    if p.get("skills"):
-                        profile_data["skills"] = p["skills"]
-                    if p.get("total_years_experience"):
-                        profile_data["total_years_experience"] = p["total_years_experience"]
-                    if p.get("picture_url"):
-                        profile_data["picture_url"] = p["picture_url"]
-                    profiles_payload.append(profile_data)
-                
-                for i in range(0, len(profiles_payload), 50):
-                    batch = profiles_payload[i:i+50]
-                    result = add_profiles_to_project(project_id, batch)
-                    added_total += result.get("added", 0)
-                    contact_ids.extend(result.get("contact_ids", []))
-                    
-                    progress = min((i + 50) / len(profiles_payload), 0.5)
-                    push_progress.progress(progress, text=f"{added_total} profils ajoutés...")
-                    time.sleep(0.5)
-                
-                push_progress.progress(0.5, text=f"✅ {added_total} profils ajoutés. Notes...")
-                
-                for idx, contact_id in enumerate(contact_ids):
-                    if idx < len(profiles_to_push):
-                        p = profiles_to_push[idx]
-                        note = f"🎯 Score : {p['score']}/10\n💬 {p['justification']}"
-                        try:
-                            add_note_to_contact(contact_id, note)
-                        except Exception:
-                            pass
-                        
-                        progress = 0.5 + (0.5 * (idx + 1) / len(contact_ids))
-                        push_progress.progress(min(progress, 1.0), text=f"Notes : {idx+1}/{len(contact_ids)}")
-                        time.sleep(0.2)
-                
-                push_progress.progress(1.0, text="✅ Terminé")
-                st.success(f"🎉 {added_total} profils ajoutés avec scores dans Leonar !")
-                st.balloons()
-                
-            except Exception as e:
-                st.error(f"Erreur push : {e}")
+        if st.session_state.get("scoring_done"):
+            scored_profiles = st.session_state["scored_profiles"]
+
+            visible = [p for p in scored_profiles if p["score"] >= score_threshold]
+            hidden = len(scored_profiles) - len(visible)
+
+            st.subheader(f"Résultats — {len(visible)} profils ≥ {score_threshold}/10")
+            if hidden > 0:
+                st.caption(f"({hidden} profils sous le seuil masqués)")
+
+            for p in visible:
+                score = p["score"]
+                emoji = "🟢" if score >= 8 else "🟡" if score >= 6 else "🟠" if score >= 4 else "🔴"
+
+                skills_preview = ", ".join(p.get("skills", [])[:5]) if p.get("skills") else ""
+                xp = f" | {p.get('total_years_experience', '?')} ans XP" if p.get("total_years_experience") else ""
+
+                with st.expander(f"{emoji} **{score}/10** — {(p.get('first_name') or '')} {(p.get('last_name') or '')} | {p.get('headline', '')}{xp}"):
+                    col_l, col_r = st.columns([2, 1])
+                    with col_l:
+                        st.write(f"💬 {p['justification']}")
+                        st.write(f"📍 {p.get('location', 'N/A')}")
+                        if p.get("experiences"):
+                            for exp in p["experiences"][:3]:
+                                current = " ✅" if exp.get("is_current") else ""
+                                period = f" ({exp.get('start_date', '')} → {exp.get('end_date', 'présent')})" if exp.get("start_date") else ""
+                                st.write(f"  • {exp.get('title', '')} @ {exp.get('company_name', '')}{current}{period}")
+                        if p.get("educations"):
+                            for edu in p["educations"][:2]:
+                                st.write(f"  🎓 {edu.get('diploma', '')} {edu.get('specialization', '')} — {edu.get('educational_establishment', '')}")
+                    with col_r:
+                        if skills_preview:
+                            st.write(f"🛠 {skills_preview}")
+                        if p.get("linkedin_url"):
+                            st.write(f"🔗 [LinkedIn]({p['linkedin_url']})")
+                        else:
+                            st.write("⚠️ Pas de LinkedIn")
+
+            # ============================================================
+            # ÉTAPE 4 — PUSH LEONAR
+            # ============================================================
+            st.header("4️⃣ Envoyer dans Leonar")
+
+            min_score_push = st.slider("Score minimum pour push", 0, 10, score_threshold)
+            profiles_to_push = [p for p in scored_profiles if p["score"] >= min_score_push]
+            st.info(f"{len(profiles_to_push)} profils seront ajoutés (score ≥ {min_score_push}/10)")
+
+            if st.button(f"📤 Ajouter {len(profiles_to_push)} profils dans Leonar", type="primary"):
+                project_id = st.session_state.get("selected_project_id")
+                push_progress = st.progress(0, text="Ajout en cours...")
+
+                try:
+                    added_total = 0
+                    contact_ids = []
+
+                    profiles_payload = []
+                    for p in profiles_to_push:
+                        profile_data = {
+                            "profile_id": p.get("profile_id"),
+                            "first_name": (p.get("first_name") or ""),
+                            "last_name": (p.get("last_name") or ""),
+                            "headline": p.get("headline", ""),
+                            "linkedin_url": p.get("linkedin_url", ""),
+                            "location": p.get("location", ""),
+                        }
+                        if p.get("current_job"):
+                            profile_data["current_job"] = p["current_job"]
+                        if p.get("experiences"):
+                            profile_data["experiences"] = p["experiences"]
+                        if p.get("educations"):
+                            profile_data["educations"] = p["educations"]
+                        if p.get("skills"):
+                            profile_data["skills"] = p["skills"]
+                        if p.get("total_years_experience"):
+                            profile_data["total_years_experience"] = p["total_years_experience"]
+                        if p.get("picture_url"):
+                            profile_data["picture_url"] = p["picture_url"]
+                        profiles_payload.append(profile_data)
+
+                    for i in range(0, len(profiles_payload), 50):
+                        batch = profiles_payload[i:i+50]
+                        result = add_profiles_to_project(project_id, batch)
+                        added_total += result.get("added", 0)
+                        contact_ids.extend(result.get("contact_ids", []))
+
+                        progress = min((i + 50) / len(profiles_payload), 0.5)
+                        push_progress.progress(progress, text=f"{added_total} profils ajoutés...")
+                        time.sleep(0.5)
+
+                    push_progress.progress(0.5, text=f"✅ {added_total} profils ajoutés. Notes...")
+
+                    for idx, contact_id in enumerate(contact_ids):
+                        if idx < len(profiles_to_push):
+                            p = profiles_to_push[idx]
+                            note = f"🎯 Score : {p['score']}/10\n💬 {p['justification']}"
+                            try:
+                                add_note_to_contact(contact_id, note)
+                            except Exception:
+                                pass
+
+                            progress = 0.5 + (0.5 * (idx + 1) / len(contact_ids))
+                            push_progress.progress(min(progress, 1.0), text=f"Notes : {idx+1}/{len(contact_ids)}")
+                            time.sleep(0.2)
+
+                    push_progress.progress(1.0, text="✅ Terminé")
+                    st.success(f"🎉 {added_total} profils ajoutés avec scores dans Leonar !")
+                    st.balloons()
+
+                except Exception as e:
+                    st.error(f"Erreur push : {e}")
+
+# ============================================================
+# ONGLET 2 — DOSSIER DE CANDIDATURE
+# ============================================================
+with tab2:
+    st.header("📄 Générateur de Dossier de Candidature")
+    st.caption("Crée un dossier Entourage à partir du CV PDF + brief entretien.")
+
+    if not HTML_MASTER_TEMPLATE:
+        st.error("⚠️ Fichier `dossier_template.html` introuvable. Place-le dans le même dossier que app.py.")
+        st.stop()
+
+    # --- LOGO (persistant en session) ---
+    with st.expander(
+        "🖼 Logo Entourage" + (" ✓" if st.session_state.get("dossier_logo_b64") else " — à uploader"),
+        expanded=not st.session_state.get("dossier_logo_b64"),
+    ):
+        logo_file = st.file_uploader(
+            "Logo Entourage Recrutement (.png / .jpg)",
+            type=["png", "jpg", "jpeg"],
+            key="dossier_logo_upload",
+        )
+        if logo_file:
+            st.session_state["dossier_logo_b64"] = base64.b64encode(logo_file.read()).decode()
+            st.success("Logo chargé et conservé pour la session ✓")
+        elif st.session_state.get("dossier_logo_b64"):
+            st.info("Logo déjà chargé en session ✓")
+
+    st.divider()
+
+    # --- INPUTS PRINCIPAUX ---
+    col_left, col_right = st.columns(2)
+
+    with col_left:
+        cv_file = st.file_uploader(
+            "📎 CV du candidat (PDF)",
+            type=["pdf"],
+            key="dossier_cv",
+        )
+        brief_text = st.text_area(
+            "📝 Brief / Compte-rendu entretien",
+            height=220,
+            placeholder="Colle ici le brief IA issu de la retranscription visio...",
+            key="dossier_brief",
+        )
+        commercial = st.radio(
+            "👤 Responsable de chasse",
+            ["Warren", "Helder"],
+            horizontal=True,
+            key="dossier_commercial",
+        )
+
+    with col_right:
+        st.markdown("**Score Card — Critères du poste**")
+        st.caption("Critères fixes pour ce poste (identiques pour tous les candidats de ce job). Notes et analyses générées par l'IA.")
+        critere1 = st.text_input("Critère 1", placeholder="Ex : Expertise technique", key="dossier_c1")
+        critere2 = st.text_input("Critère 2", placeholder="Ex : Management / Leadership", key="dossier_c2")
+        critere3 = st.text_input("Critère 3", placeholder="Ex : Expérience sectorielle", key="dossier_c3")
+        critere4 = st.text_input("Critère 4", placeholder="Ex : Soft Skills / Culture fit", key="dossier_c4")
+
+    st.divider()
+
+    # --- BOUTON GÉNÉRER ---
+    if st.button("✨ Générer le Dossier", type="primary", key="dossier_generate"):
+        errors = []
+        if not st.session_state.get("dossier_logo_b64"):
+            errors.append("Upload le logo Entourage (expander en haut)")
+        if not cv_file:
+            errors.append("Upload le CV PDF du candidat")
+        if not brief_text.strip():
+            errors.append("Le brief / compte-rendu est obligatoire")
+        if not all([critere1.strip(), critere2.strip(), critere3.strip(), critere4.strip()]):
+            errors.append("Les 4 critères de la score card doivent être renseignés")
+
+        if errors:
+            for err in errors:
+                st.error(f"❌ {err}")
+        else:
+            with st.spinner("Claude lit le CV et génère le dossier… (30 à 90 secondes selon la longueur du CV)"):
+                try:
+                    # 1. Lire et encoder le PDF
+                    pdf_bytes = cv_file.read()
+                    pdf_b64 = base64.b64encode(pdf_bytes).decode()
+
+                    # 2. Injecter le logo base64 dans le template
+                    logo_b64 = st.session_state["dossier_logo_b64"]
+                    html_with_logo = HTML_MASTER_TEMPLATE.replace(
+                        'src="LOGO_PLACEHOLDER"',
+                        f'src="data:image/png;base64,{logo_b64}"',
+                    )
+
+                    # 3. Construire le prompt utilisateur
+                    user_prompt = (
+                        f"BRIEF / COMPTE-RENDU ENTRETIEN :\n{brief_text.strip()}\n\n"
+                        f"COMMERCIAL : {commercial}\n\n"
+                        f"CRITÈRES SCORECARD (4 lignes, dans cet ordre) :\n"
+                        f"1. {critere1.strip()}\n"
+                        f"2. {critere2.strip()}\n"
+                        f"3. {critere3.strip()}\n"
+                        f"4. {critere4.strip()}\n\n"
+                        f"VOICI LE CODE HTML MAÎTRE À REMPLIR :\n{html_with_logo}"
+                    )
+
+                    # 4. Appel Claude avec le PDF en pièce jointe native
+                    claude_client = Anthropic(api_key=claude_api_key)
+                    response = claude_client.messages.create(
+                        model="claude-sonnet-4-20250514",
+                        max_tokens=8000,
+                        system=DOSSIER_SYSTEM_PROMPT,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "document",
+                                        "source": {
+                                            "type": "base64",
+                                            "media_type": "application/pdf",
+                                            "data": pdf_b64,
+                                        },
+                                        "title": "CV du candidat",
+                                    },
+                                    {
+                                        "type": "text",
+                                        "text": user_prompt,
+                                    },
+                                ],
+                            }
+                        ],
+                    )
+
+                    generated_html = response.content[0].text
+
+                    # 5. Nettoyer les balises markdown si Claude les a ajoutées
+                    generated_html = re.sub(r"^```[^\n]*\n", "", generated_html)
+                    generated_html = re.sub(r"\n```\s*$", "", generated_html.strip())
+
+                    st.session_state["dossier_html"] = generated_html
+                    st.success("✅ Dossier généré avec succès !")
+
+                except Exception as e:
+                    st.error(f"Erreur lors de la génération : {e}")
+
+    # --- RÉSULTAT : TÉLÉCHARGEMENT + APERÇU ---
+    if st.session_state.get("dossier_html"):
+        html_content = st.session_state["dossier_html"]
+
+        # Extraire le nom du candidat pour le nom de fichier
+        name_match = re.search(r'class="candidate-name">([^<]+)<', html_content)
+        candidate_name = (
+            name_match.group(1).strip().replace(" ", "_") if name_match else "candidat"
+        )
+        filename = f"dossier_{candidate_name}.html"
+
+        st.download_button(
+            label="⬇️ Télécharger le Dossier (.html)",
+            data=html_content,
+            file_name=filename,
+            mime="text/html",
+            type="primary",
+            key="dossier_download",
+        )
+        st.caption(
+            "💡 Ouvre le fichier dans Chrome → **Ctrl+P** (Cmd+P sur Mac) → "
+            "**Enregistrer en PDF** → format A4, sans marges"
+        )
+
+        with st.expander("👁 Aperçu du dossier"):
+            st.components.v1.html(html_content, height=900, scrolling=True)
