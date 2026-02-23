@@ -10,6 +10,7 @@ from datetime import date
 from pathlib import Path
 from anthropic import Anthropic
 from dotenv import load_dotenv
+import fitz  # pymupdf — rendu des pages CV en images PNG
 
 # ============================================================
 # DOSSIER DE CANDIDATURE — CONSTANTES
@@ -37,7 +38,7 @@ RÈGLES CRITIQUES ABSOLUES (à respecter sous peine d'échec) :
      Responsable de chasse : <a href="https://www.linkedin.com/in/warren-elbaz/">Warren</a> - 06 50 60 22 61
    - Si "Commercial : Helder" → Écris exactement :
      Responsable de chasse : <a href="https://www.linkedin.com/in/helder-alturas-48010463/">Helder</a> - 06 22 30 96 11
-   - Remplace {{PIED_DE_PAGE_COMMERCIAL}} par ce texte dans CHAQUE footer de CHAQUE page.
+   - Remplace {{PIED_DE_PAGE_COMMERCIAL}} par ce texte dans le footer des pages 1 et 2.
 
 5. SCORECARD (PAGE 2) :
    - La note globale ({{NOTE_GLOBALE}}) doit être SUR 5 (ex: 4.5). Jamais sur 10.
@@ -46,22 +47,17 @@ RÈGLES CRITIQUES ABSOLUES (à respecter sous peine d'échec) :
    - La note globale est la moyenne des 4 notes.
    - Format d'une ligne : <tr><td class="score-cat">Nom critère</td><td class="score-val">X.X / 5</td><td class="score-txt">Analyse...</td></tr>
 
-6. ⚠️ INTÉGRALITÉ DU CV — RÈGLE ABSOLUE (PAGES 3, 4, 5…) :
-   - Tu DOIS reproduire mot pour mot le contenu de CHAQUE expérience professionnelle du CV.
-   - Aucun raccourci, aucun résumé, aucune omission. Même les postes anciens ou courts.
-   - Copie TOUTES les missions, réalisations et descriptions telles qu'elles figurent dans le CV.
-   - Sidebar : coordonnées, formation, compétences, langues, centres d'intérêt — tout inclure.
-   - Si le contenu dépasse une page, CRÉE autant de pages supplémentaires que nécessaire :
-     chaque nouvelle page a le même header (doc-title="CV") et footer.
-   - Ne coupe jamais une expérience entre deux pages.
-   - Si une page risque d'être trop chargée, crée une nouvelle page AVANT d'y être contraint. Il vaut mieux 5 pages aérées que 3 pages trop denses.
-
-7. POINTS CLÉS (PAGE 1) :
+6. POINTS CLÉS (PAGE 1) :
    - Dans la .points-grid, insère 3 à 5 .point-card.
    - Alterne entre points positifs (force) et points de vigilance (à valider).
+   - Inclure OBLIGATOIREMENT un point card sur les prétentions salariales du candidat
+     (extraire du brief ou du CV). Exemple titre : "Prétentions salariales", exemple contenu : "65 k€ fixe + variable".
+     Si non mentionné : titre "Prétentions salariales", contenu "Non communiquées — à clarifier".
    - Format : <div class="point-card"><div class="point-icon"><i class="fa-solid fa-check"></i></div><div class="point-content"><h4>Titre</h4><p>Description</p></div></div>
 
-8. OUTPUT :
+7. OUTPUT :
+   - Génère UNIQUEMENT les pages 1 et 2. Ne crée PAS de page 3 ou suivante.
+   - Le CV original sera inséré automatiquement par le système après les pages 1 et 2.
    - Retourne UNIQUEMENT le code HTML complet, sans balises markdown (pas de ```html), sans explications.
    - Le fichier doit être directement utilisable dans un navigateur.
 """
@@ -1192,11 +1188,8 @@ with tab2:
                         "Lis la Score Card du poste ci-dessus. "
                         "Extrais les 4 critères, notes (/5) et analyses. "
                         "Utilise-les pour remplir le tableau page 2.\n\n"
-                        "⚠️ PRIORITÉ ABSOLUE — CV COMPLET :\n"
-                        "Tu dois reproduire l'INTÉGRALITÉ du CV dans les pages 3 et suivantes. "
-                        "Chaque poste, chaque mission, chaque ligne du CV original doit apparaître. "
-                        "N'abrège rien, ne résume rien, ne saute aucun poste même ancien. "
-                        "Si le contenu nécessite une page 4 ou 5, crée-les.\n\n"
+                        "RAPPEL : génère UNIQUEMENT les pages 1 et 2. "
+                        "Le CV original sera ajouté automatiquement après.\n\n"
                         f"VOICI LE CODE HTML MAÎTRE À REMPLIR :\n{HTML_MASTER_TEMPLATE}"
                     )
                     content_blocks.append({"type": "text", "text": user_prompt})
@@ -1205,7 +1198,7 @@ with tab2:
                     claude_client = Anthropic(api_key=claude_api_key)
                     response = claude_client.messages.create(
                         model="claude-sonnet-4-20250514",
-                        max_tokens=32000,
+                        max_tokens=8000,
                         system=DOSSIER_SYSTEM_PROMPT,
                         messages=[{"role": "user", "content": content_blocks}],
                         timeout=240.0,
@@ -1215,9 +1208,8 @@ with tab2:
                     # Vérifier si Claude a été coupé par la limite de tokens
                     if response.stop_reason == "max_tokens":
                         st.warning(
-                            "⚠️ Le dossier a été généré partiellement (CV très long). "
-                            "Certaines expériences anciennes peuvent manquer. "
-                            "Contacte le support pour augmenter la limite si nécessaire."
+                            "⚠️ Génération interrompue (limite de tokens atteinte). "
+                            "Les pages 1 et 2 peuvent être incomplètes."
                         )
 
                     # ÉTAPE 4 — Nettoyage, injection logo + LinkedIn
@@ -1251,7 +1243,25 @@ with tab2:
                     final_html = final_html.replace('href="{{LIEN_LINKEDIN}}"', f'href="{linkedin_url.strip() or "#"}"')
                     final_html = final_html.replace('{{LIEN_LINKEDIN}}', linkedin_url.strip() or "#")
 
-                    # ÉTAPE 5 — Injection du bouton "Enregistrer en PDF"
+                    # ÉTAPE 5 — Appendre les pages du CV original comme images PNG
+                    st.write("📄 Conversion du CV en images…")
+                    pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+                    cv_pages_html = ""
+                    mat = fitz.Matrix(150 / 72, 150 / 72)  # 150 DPI
+                    for page_num in range(len(pdf_doc)):
+                        pix = pdf_doc[page_num].get_pixmap(matrix=mat)
+                        img_b64 = base64.b64encode(pix.tobytes("png")).decode()
+                        cv_pages_html += (
+                            '<div class="page" style="padding:0;overflow:hidden;">'
+                            f'<img src="data:image/png;base64,{img_b64}" '
+                            'style="width:210mm;height:297mm;object-fit:contain;display:block;margin:0;" />'
+                            '</div>\n'
+                        )
+                    pdf_doc.close()
+                    # Insérer les pages CV juste avant </body>
+                    final_html = final_html.replace("</body>", f"{cv_pages_html}</body>", 1)
+
+                    # ÉTAPE 6 — Injection du bouton "Enregistrer en PDF"
                     # Ce bouton appelle window.print() du navigateur = PDF parfait, natif, gratuit
                     print_button_html = """
 <div style="position:fixed;top:20px;right:20px;z-index:9999;background:#FFD700;border-radius:8px;box-shadow:0 4px 15px rgba(0,0,0,0.3);">
