@@ -22,38 +22,45 @@ RÈGLES CRITIQUES ABSOLUES (à respecter sous peine d'échec) :
 1. INTERDICTION FORMELLE DE TOUCHER AU DESIGN :
    - Ne modifie JAMAIS le CSS (couleurs, polices, marges).
    - Garde la structure <div class="page"> exacte (A4, 210mm x 297mm).
-   - Ne change pas l'image du logo (elle est déjà en base64 dans le src).
 
-2. SUPPRESSION DES CITATIONS :
+2. ⚠️ LOGO — RÈGLE ABSOLUE :
+   - Le template contient des balises <img src="LOGO_PLACEHOLDER" ...>.
+   - Tu dois conserver la chaîne EXACTE src="LOGO_PLACEHOLDER" dans CHAQUE balise img du header.
+   - N'écris PAS src="", N'efface PAS, NE MODIFIE PAS cette chaîne. Elle sera remplacée après coup.
+
+3. SUPPRESSION DES CITATIONS :
    - Le texte final doit être propre.
    - INTERDICTION de laisser des balises de source, crochets [cite], ou mentions "Source". Supprime-les toutes.
 
-3. LOGIQUE PIED DE PAGE (FOOTER) :
+4. LOGIQUE PIED DE PAGE (FOOTER) :
    - Si "Commercial : Warren" → Écris exactement :
      Responsable de chasse : <a href="https://www.linkedin.com/in/warren-elbaz/">Warren</a> - 06 50 60 22 61
    - Si "Commercial : Helder" → Écris exactement :
      Responsable de chasse : <a href="https://www.linkedin.com/in/helder-alturas-48010463/">Helder</a> - 06 22 30 96 11
    - Remplace {{PIED_DE_PAGE_COMMERCIAL}} par ce texte dans CHAQUE footer de CHAQUE page.
 
-4. SCORECARD (PAGE 2) :
+5. SCORECARD (PAGE 2) :
    - La note globale ({{NOTE_GLOBALE}}) doit être SUR 5 (ex: 4.5). Jamais sur 10.
    - Le tableau doit contenir EXACTEMENT 4 lignes <tr> avec les critères fournis.
    - Pour chaque critère : attribue une note /5 et rédige une analyse concise issue du CV et du brief.
    - La note globale est la moyenne des 4 notes.
    - Format d'une ligne : <tr><td class="score-cat">Nom critère</td><td class="score-val">X.X / 5</td><td class="score-txt">Analyse...</td></tr>
 
-5. INTÉGRALITÉ DU CV (PAGES 3, 4 et +) :
-   - Copie le contenu de TOUTES les expériences du CV sans en omettre aucune.
-   - Sidebar (page 3) : coordonnées, formation, compétences, langues, centres d'intérêt.
-   - Expériences : dans la .timeline, crée un .job par poste avec .job-title, .job-company, .job-desc.
-   - GESTION DU DÉBORDEMENT : si le texte est trop long pour la page 3, CRÉE une page 4 (nouvelle <div class="page">) avec le même header (doc-title="CV") et footer, et une nouvelle .timeline pour la suite. Ne coupe jamais une expérience en deux pages.
+6. ⚠️ INTÉGRALITÉ DU CV — RÈGLE ABSOLUE (PAGES 3, 4, 5…) :
+   - Tu DOIS reproduire mot pour mot le contenu de CHAQUE expérience professionnelle du CV.
+   - Aucun raccourci, aucun résumé, aucune omission. Même les postes anciens ou courts.
+   - Copie TOUTES les missions, réalisations et descriptions telles qu'elles figurent dans le CV.
+   - Sidebar : coordonnées, formation, compétences, langues, centres d'intérêt — tout inclure.
+   - Si le contenu dépasse une page, CRÉE autant de pages supplémentaires que nécessaire :
+     chaque nouvelle page a le même header (doc-title="CV") et footer.
+   - Ne coupe jamais une expérience entre deux pages.
 
-6. POINTS CLÉS (PAGE 1) :
+7. POINTS CLÉS (PAGE 1) :
    - Dans la .points-grid, insère 3 à 5 .point-card.
    - Alterne entre points positifs (force) et points de vigilance (à valider).
    - Format : <div class="point-card"><div class="point-icon"><i class="fa-solid fa-check"></i></div><div class="point-content"><h4>Titre</h4><p>Description</p></div></div>
 
-7. OUTPUT :
+8. OUTPUT :
    - Retourne UNIQUEMENT le code HTML complet, sans balises markdown (pas de ```html), sans explications.
    - Le fichier doit être directement utilisable dans un navigateur.
 """
@@ -1088,9 +1095,14 @@ with tab2:
         )
         brief_text = st.text_area(
             "📝 Brief / Compte-rendu entretien",
-            height=220,
+            height=180,
             placeholder="Colle ici le brief IA issu de la retranscription visio...",
             key="dossier_brief",
+        )
+        linkedin_url = st.text_input(
+            "🔗 LinkedIn du candidat",
+            placeholder="https://www.linkedin.com/in/prenom-nom/",
+            key="dossier_linkedin",
         )
         commercial = st.radio(
             "👤 Responsable de chasse",
@@ -1179,6 +1191,11 @@ with tab2:
                         "Lis la Score Card du poste ci-dessus. "
                         "Extrais les 4 critères, notes (/5) et analyses. "
                         "Utilise-les pour remplir le tableau page 2.\n\n"
+                        "⚠️ PRIORITÉ ABSOLUE — CV COMPLET :\n"
+                        "Tu dois reproduire l'INTÉGRALITÉ du CV dans les pages 3 et suivantes. "
+                        "Chaque poste, chaque mission, chaque ligne du CV original doit apparaître. "
+                        "N'abrège rien, ne résume rien, ne saute aucun poste même ancien. "
+                        "Si le contenu nécessite une page 4 ou 5, crée-les.\n\n"
                         f"VOICI LE CODE HTML MAÎTRE À REMPLIR :\n{HTML_MASTER_TEMPLATE}"
                     )
                     content_blocks.append({"type": "text", "text": user_prompt})
@@ -1187,23 +1204,39 @@ with tab2:
                     claude_client = Anthropic(api_key=claude_api_key)
                     response = claude_client.messages.create(
                         model="claude-sonnet-4-20250514",
-                        max_tokens=16000,
+                        max_tokens=32000,
                         system=DOSSIER_SYSTEM_PROMPT,
                         messages=[{"role": "user", "content": content_blocks}],
-                        timeout=180.0,
+                        timeout=240.0,
                     )
                     generated_html = response.content[0].text
 
-                    # ÉTAPE 4 — Nettoyage et injection du logo
+                    # Vérifier si Claude a été coupé par la limite de tokens
+                    if response.stop_reason == "max_tokens":
+                        st.warning(
+                            "⚠️ Le dossier a été généré partiellement (CV très long). "
+                            "Certaines expériences anciennes peuvent manquer. "
+                            "Contacte le support pour augmenter la limite si nécessaire."
+                        )
+
+                    # ÉTAPE 4 — Nettoyage, injection logo + LinkedIn
                     st.write("🖼 Injection du logo et finalisation…")
                     generated_html = re.sub(r"^```[^\n]*\n", "", generated_html)
                     generated_html = re.sub(r"\n```\s*$", "", generated_html.strip())
 
+                    # Injection logo (APRÈS génération Claude)
                     logo_b64 = st.session_state["dossier_logo_b64"]
+                    if 'LOGO_PLACEHOLDER' not in generated_html:
+                        st.warning("⚠️ Logo : le placeholder n'a pas été conservé par Claude — le logo n'apparaîtra pas dans le header.")
                     final_html = generated_html.replace(
                         'src="LOGO_PLACEHOLDER"',
                         f'src="data:image/png;base64,{logo_b64}"',
                     )
+
+                    # Injection LinkedIn (côté Python, fiable à 100%)
+                    linkedin_val = linkedin_url.strip() if linkedin_url.strip() else "#"
+                    final_html = final_html.replace('href="{{LIEN_LINKEDIN}}"', f'href="{linkedin_val}"')
+                    final_html = final_html.replace('{{LIEN_LINKEDIN}}', linkedin_val)
 
                     # ÉTAPE 5 — Injection du bouton "Enregistrer en PDF"
                     # Ce bouton appelle window.print() du navigateur = PDF parfait, natif, gratuit
