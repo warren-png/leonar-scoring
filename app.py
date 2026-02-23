@@ -54,6 +54,7 @@ RÈGLES CRITIQUES ABSOLUES (à respecter sous peine d'échec) :
    - Si le contenu dépasse une page, CRÉE autant de pages supplémentaires que nécessaire :
      chaque nouvelle page a le même header (doc-title="CV") et footer.
    - Ne coupe jamais une expérience entre deux pages.
+   - Si une page risque d'être trop chargée, crée une nouvelle page AVANT d'y être contraint. Il vaut mieux 5 pages aérées que 3 pages trop denses.
 
 7. POINTS CLÉS (PAGE 1) :
    - Dans la .points-grid, insère 3 à 5 .point-card.
