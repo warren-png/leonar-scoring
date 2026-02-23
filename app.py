@@ -65,6 +65,18 @@ RÈGLES CRITIQUES ABSOLUES (à respecter sous peine d'échec) :
 _template_path = Path(__file__).parent / "dossier_template.html"
 HTML_MASTER_TEMPLATE = _template_path.read_text(encoding="utf-8") if _template_path.exists() else ""
 
+REVISION_SYSTEM_PROMPT = """Tu es un correcteur de dossiers de candidature Entourage.
+Tu reçois les pages 1 et 2 d'un dossier HTML existant, ainsi que des instructions
+de correction rédigées par le chasseur.
+
+RÈGLES ABSOLUES :
+1. Ne modifie JAMAIS le CSS, les couleurs, les polices, la structure des divs.
+2. Conserve EXACTEMENT les placeholders : src="LOGO_PLACEHOLDER" et LINKEDIN_CONTACT_ITEM_PLACEHOLDER.
+3. Les notes du tableau sont toujours /5 (jamais /10).
+4. Retourne UNIQUEMENT le HTML complet des pages 1 et 2, sans markdown, sans explications.
+5. N'ajoute PAS de page 3 ou suivante — le CV original est géré séparément.
+"""
+
 # ============================================================
 # CONFIG
 # ============================================================
@@ -1243,6 +1255,10 @@ with tab2:
                     final_html = final_html.replace('href="{{LIEN_LINKEDIN}}"', f'href="{linkedin_url.strip() or "#"}"')
                     final_html = final_html.replace('{{LIEN_LINKEDIN}}', linkedin_url.strip() or "#")
 
+                    # Sauvegarde pages 1+2 et PDF pour les révisions ultérieures
+                    st.session_state["dossier_html_pages12"] = final_html
+                    st.session_state["dossier_pdf_bytes"] = pdf_bytes
+
                     # ÉTAPE 5 — Appendre les pages du CV original comme images PNG
                     st.write("📄 Conversion du CV en images…")
                     pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
@@ -1272,6 +1288,8 @@ with tab2:
 <style>@media print { .no-print { display:none!important; } }</style>
 <div class="no-print" style="height:0"></div>
 """
+                    # Sauvegarder pour la révision (le bouton doit être re-injecté)
+                    st.session_state["_print_button_html"] = print_button_html
                     # Insérer juste après <body>
                     final_html = final_html.replace("<body>", f"<body>\n{print_button_html}", 1)
 
@@ -1313,58 +1331,103 @@ with tab2:
 
         st.divider()
 
-        # --- CORRECTIONS RAPIDES ---
-        with st.expander("✏️ Corrections rapides — modifier sans régénérer"):
-            st.caption("Corrige les champs ci-dessous puis clique **Appliquer**. Le fichier à télécharger sera mis à jour instantanément.")
+        # --- CORRECTIONS PAR COMMENTAIRES ---
+        with st.expander("✏️ Corrections — décrire et régénérer"):
+            st.caption(
+                "Décris ce que tu veux modifier (ton, scores, analyse, points clés…). "
+                "Claude régénère les pages 1 et 2 en intégrant tes corrections. Le CV reste inchangé."
+            )
+            user_corrections = st.text_area(
+                "Tes corrections",
+                placeholder=(
+                    "Exemples :\n"
+                    "— L'analyse manque de conviction, rends-la plus assertive\n"
+                    "— Note Expertise Technique trop haute, mettre 3.0/5\n"
+                    "— Ajouter un point de vigilance sur la mobilité géographique\n"
+                    "— Prétentions : 70k€ fixe + 15k€ variable"
+                ),
+                height=160,
+                key="fix_comments",
+            )
 
-            # Extraction des valeurs actuelles depuis le HTML
-            def _extract(pattern, html, default=""):
-                m = re.search(pattern, html, re.DOTALL)
-                return m.group(1).strip() if m else default
+            if st.button("🔄 Régénérer avec les corrections", type="primary", key="fix_regenerate"):
+                if not user_corrections.strip():
+                    st.warning("Écris tes corrections avant de régénérer.")
+                elif not st.session_state.get("dossier_html_pages12"):
+                    st.error("Génère d'abord un dossier.")
+                else:
+                    with st.status("Révision en cours…", expanded=True) as rev_status:
+                        try:
+                            html_p12 = st.session_state["dossier_html_pages12"]
+                            pdf_bytes_rev = st.session_state.get("dossier_pdf_bytes", b"")
 
-            cur_nom     = _extract(r'class="candidate-name">([^<]+)<', html_content)
-            cur_poste   = _extract(r'class="candidate-role">([^<]+)<', html_content)
-            cur_email   = _extract(r'fa-solid fa-envelope[^>]*></i>\s*([^<\n]+)', html_content)
-            cur_tel     = _extract(r'fa-solid fa-phone[^>]*></i>\s*([^<\n]+)', html_content)
-            cur_li      = _extract(r'fa-brands fa-linkedin-in[^>]*></i>\s*<a href="([^"]+)"', html_content)
-            cur_analyse = _extract(r'class="hunter-text">\s*(.*?)\s*</p>', html_content)
+                            revision_user_prompt = (
+                                f"CORRECTIONS DEMANDÉES :\n{user_corrections.strip()}\n\n"
+                                "PAGES 1 ET 2 ACTUELLES (HTML à corriger) :\n"
+                                f"{html_p12}"
+                            )
 
-            fix_col1, fix_col2 = st.columns(2)
-            with fix_col1:
-                new_nom   = st.text_input("Nom du candidat",  value=cur_nom,   key="fix_nom")
-                new_email = st.text_input("Email",             value=cur_email, key="fix_email")
-                new_tel   = st.text_input("Téléphone",         value=cur_tel,   key="fix_tel")
-            with fix_col2:
-                new_poste = st.text_input("Poste",             value=cur_poste, key="fix_poste")
-                new_li    = st.text_input("LinkedIn (URL)",    value=cur_li,    key="fix_li")
+                            claude_client_rev = Anthropic(api_key=claude_api_key)
+                            rev_response = claude_client_rev.messages.create(
+                                model="claude-sonnet-4-20250514",
+                                max_tokens=8000,
+                                system=REVISION_SYSTEM_PROMPT,
+                                messages=[{"role": "user", "content": revision_user_prompt}],
+                                timeout=120.0,
+                            )
+                            revised = rev_response.content[0].text
+                            revised = re.sub(r"^```[^\n]*\n", "", revised)
+                            revised = re.sub(r"\n```\s*$", "", revised.strip())
 
-            new_analyse = st.text_area("Notre Analyse (texte en italique page 1)",
-                                        value=cur_analyse, height=120, key="fix_analyse")
+                            # Re-injection logo
+                            logo_b64_rev = st.session_state["dossier_logo_b64"]
+                            revised = revised.replace(
+                                'src="LOGO_PLACEHOLDER"',
+                                f'src="data:image/png;base64,{logo_b64_rev}"',
+                            )
 
-            if st.button("✅ Appliquer les corrections", type="primary", key="fix_apply"):
-                h = st.session_state["dossier_html"]
+                            # Re-injection LinkedIn
+                            li_url = st.session_state.get("dossier_linkedin", "")
+                            if li_url.strip():
+                                li_div = (
+                                    '<div class="contact-item">'
+                                    '<i class="fa-brands fa-linkedin-in"></i> '
+                                    f'<a href="{li_url.strip()}" target="_blank">Profil LinkedIn</a>'
+                                    '</div>'
+                                )
+                            else:
+                                li_div = ""
+                            revised = revised.replace("LINKEDIN_CONTACT_ITEM_PLACEHOLDER", li_div)
 
-                # Nom
-                if new_nom:
-                    h = re.sub(r'(class="candidate-name">)[^<]*(</h1>)', rf'\g<1>{new_nom}\g<2>', h)
-                # Poste
-                if new_poste:
-                    h = re.sub(r'(class="candidate-role">)[^<]*(</div>)', rf'\g<1>{new_poste}\g<2>', h, count=1)
-                # Email
-                if new_email:
-                    h = re.sub(r'(fa-solid fa-envelope[^>]*></i> )[^<\n]+', rf'\g<1>{new_email}', h)
-                # Téléphone
-                if new_tel:
-                    h = re.sub(r'(fa-solid fa-phone[^>]*></i> )[^<\n]+', rf'\g<1>{new_tel}', h)
-                # LinkedIn URL
-                if new_li:
-                    h = re.sub(r'(fa-brands fa-linkedin-in[^>]*></i>\s*<a href=")[^"]*(")',
-                                rf'\g<1>{new_li}\g<2>', h)
-                # Analyse
-                if new_analyse:
-                    h = re.sub(r'(class="hunter-text">)\s*.*?\s*(</p>)',
-                                rf'\g<1>{new_analyse}\g<2>', h, flags=re.DOTALL)
+                            # Sauvegarde pages 1+2 révisées pour révisions futures
+                            st.session_state["dossier_html_pages12"] = revised
 
-                st.session_state["dossier_html"] = h
-                st.success("Corrections appliquées ✓ — retélécharge le dossier ci-dessus.")
-                st.rerun()
+                            # Re-append pages CV
+                            if pdf_bytes_rev:
+                                pdf_doc_rev = fitz.open(stream=pdf_bytes_rev, filetype="pdf")
+                                cv_imgs = ""
+                                mat_rev = fitz.Matrix(150 / 72, 150 / 72)
+                                for pn in range(len(pdf_doc_rev)):
+                                    pix_rev = pdf_doc_rev[pn].get_pixmap(matrix=mat_rev)
+                                    i64 = base64.b64encode(pix_rev.tobytes("png")).decode()
+                                    cv_imgs += (
+                                        '<div class="page" style="padding:0;overflow:hidden;">'
+                                        f'<img src="data:image/png;base64,{i64}" '
+                                        'style="width:210mm;height:297mm;object-fit:contain;display:block;margin:0;" />'
+                                        '</div>\n'
+                                    )
+                                pdf_doc_rev.close()
+                                revised = revised.replace("</body>", f"{cv_imgs}</body>", 1)
+
+                            # Re-injection bouton print
+                            print_btn = st.session_state.get("_print_button_html", "")
+                            if print_btn:
+                                revised = revised.replace("<body>", f"<body>\n{print_btn}", 1)
+
+                            st.session_state["dossier_html"] = revised
+                            rev_status.update(label="✅ Dossier révisé !", state="complete")
+                            st.rerun()
+
+                        except Exception as rev_e:
+                            rev_status.update(label="❌ Erreur", state="error")
+                            st.error(f"Erreur : {rev_e}")
