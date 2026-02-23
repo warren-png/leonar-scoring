@@ -1048,9 +1048,12 @@ with tab1:
 # ============================================================
 # ONGLET 2 — DOSSIER DE CANDIDATURE
 # ============================================================
+# ============================================================
+# ONGLET 2 — DOSSIER DE CANDIDATURE
+# ============================================================
 with tab2:
     st.header("📄 Générateur de Dossier de Candidature")
-    st.caption("Crée un dossier Entourage à partir du CV PDF + brief entretien.")
+    st.caption("Crée un dossier Entourage à partir du CV PDF + Score Card + brief entretien.")
 
     if not HTML_MASTER_TEMPLATE:
         st.error("⚠️ Fichier `dossier_template.html` introuvable. Place-le dans le même dossier que app.py.")
@@ -1058,7 +1061,7 @@ with tab2:
 
     # --- LOGO (persistant en session) ---
     with st.expander(
-        "🖼 Logo Entourage" + (" ✓" if st.session_state.get("dossier_logo_b64") else " — à uploader"),
+        "🖼 Logo Entourage" + (" ✓" if st.session_state.get("dossier_logo_b64") else " — à uploader une fois"),
         expanded=not st.session_state.get("dossier_logo_b64"),
     ):
         logo_file = st.file_uploader(
@@ -1097,12 +1100,18 @@ with tab2:
         )
 
     with col_right:
-        st.markdown("**Score Card — Critères du poste**")
-        st.caption("Critères fixes pour ce poste (identiques pour tous les candidats de ce job). Notes et analyses générées par l'IA.")
-        critere1 = st.text_input("Critère 1", placeholder="Ex : Expertise technique", key="dossier_c1")
-        critere2 = st.text_input("Critère 2", placeholder="Ex : Management / Leadership", key="dossier_c2")
-        critere3 = st.text_input("Critère 3", placeholder="Ex : Expérience sectorielle", key="dossier_c3")
-        critere4 = st.text_input("Critère 4", placeholder="Ex : Soft Skills / Culture fit", key="dossier_c4")
+        st.markdown("**📊 Score Card du poste**")
+        st.caption(
+            "Upload la score card HTML générée par l'outil Entourage. "
+            "L'IA en extraira automatiquement les critères, notes et analyses."
+        )
+        scorecard_file = st.file_uploader(
+            "Score Card (.html ou .pdf)",
+            type=["html", "htm", "pdf"],
+            key="dossier_scorecard",
+        )
+        if scorecard_file:
+            st.success(f"Score card chargée : {scorecard_file.name} ✓")
 
     st.divider()
 
@@ -1110,78 +1119,107 @@ with tab2:
     if st.button("✨ Générer le Dossier", type="primary", key="dossier_generate"):
         errors = []
         if not st.session_state.get("dossier_logo_b64"):
-            errors.append("Upload le logo Entourage (expander en haut)")
+            errors.append("Upload le logo Entourage (section en haut)")
         if not cv_file:
             errors.append("Upload le CV PDF du candidat")
         if not brief_text.strip():
             errors.append("Le brief / compte-rendu est obligatoire")
-        if not all([critere1.strip(), critere2.strip(), critere3.strip(), critere4.strip()]):
-            errors.append("Les 4 critères de la score card doivent être renseignés")
+        if not scorecard_file:
+            errors.append("Upload la Score Card du poste")
 
         if errors:
             for err in errors:
                 st.error(f"❌ {err}")
         else:
-            with st.spinner("Claude lit le CV et génère le dossier… (30 à 90 secondes selon la longueur du CV)"):
+            with st.spinner("Claude lit le CV et la Score Card, génère le dossier… (30 à 90 s)"):
                 try:
-                    # 1. Lire et encoder le PDF
+                    # 1. Encoder le CV PDF
                     pdf_bytes = cv_file.read()
                     pdf_b64 = base64.b64encode(pdf_bytes).decode()
 
-                    # 2. Injecter le logo base64 dans le template
-                    logo_b64 = st.session_state["dossier_logo_b64"]
-                    html_with_logo = HTML_MASTER_TEMPLATE.replace(
-                        'src="LOGO_PLACEHOLDER"',
-                        f'src="data:image/png;base64,{logo_b64}"',
-                    )
+                    # 2. Lire la Score Card
+                    scorecard_bytes = scorecard_file.read()
+                    scorecard_ext = scorecard_file.name.rsplit(".", 1)[-1].lower()
 
-                    # 3. Construire le prompt utilisateur
+                    # 3. Construire le contenu Claude (SANS logo dans le template)
+                    content_blocks = [
+                        {
+                            "type": "document",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "application/pdf",
+                                "data": pdf_b64,
+                            },
+                            "title": "CV du candidat",
+                        },
+                    ]
+
+                    # Ajouter la score card selon son format
+                    if scorecard_ext in ("html", "htm"):
+                        scorecard_text = scorecard_bytes.decode("utf-8", errors="ignore")
+                        content_blocks.append({
+                            "type": "text",
+                            "text": f"SCORE CARD DU POSTE (HTML) :\n{scorecard_text}",
+                        })
+                    else:
+                        # PDF
+                        sc_b64 = base64.b64encode(scorecard_bytes).decode()
+                        content_blocks.append({
+                            "type": "document",
+                            "source": {
+                                "type": "base64",
+                                "media_type": "application/pdf",
+                                "data": sc_b64,
+                            },
+                            "title": "Score Card du poste",
+                        })
+
+                    # Prompt final — le template est envoyé SANS le logo base64
                     user_prompt = (
                         f"BRIEF / COMPTE-RENDU ENTRETIEN :\n{brief_text.strip()}\n\n"
                         f"COMMERCIAL : {commercial}\n\n"
-                        f"CRITÈRES SCORECARD (4 lignes, dans cet ordre) :\n"
-                        f"1. {critere1.strip()}\n"
-                        f"2. {critere2.strip()}\n"
-                        f"3. {critere3.strip()}\n"
-                        f"4. {critere4.strip()}\n\n"
-                        f"VOICI LE CODE HTML MAÎTRE À REMPLIR :\n{html_with_logo}"
+                        "INSTRUCTIONS SCORE CARD :\n"
+                        "Lis la Score Card du poste jointe ci-dessus. "
+                        "Extrais les 4 critères, les notes (/5) et les analyses. "
+                        "Utilise-les pour remplir le tableau de la page 2 du dossier.\n\n"
+                        f"VOICI LE CODE HTML MAÎTRE À REMPLIR :\n{HTML_MASTER_TEMPLATE}"
                     )
+                    content_blocks.append({"type": "text", "text": user_prompt})
 
-                    # 4. Appel Claude avec le PDF en pièce jointe native
+                    # 4. Appel Claude
                     claude_client = Anthropic(api_key=claude_api_key)
                     response = claude_client.messages.create(
                         model="claude-sonnet-4-20250514",
-                        max_tokens=8000,
+                        max_tokens=16000,
                         system=DOSSIER_SYSTEM_PROMPT,
-                        messages=[
-                            {
-                                "role": "user",
-                                "content": [
-                                    {
-                                        "type": "document",
-                                        "source": {
-                                            "type": "base64",
-                                            "media_type": "application/pdf",
-                                            "data": pdf_b64,
-                                        },
-                                        "title": "CV du candidat",
-                                    },
-                                    {
-                                        "type": "text",
-                                        "text": user_prompt,
-                                    },
-                                ],
-                            }
-                        ],
+                        messages=[{"role": "user", "content": content_blocks}],
                     )
 
                     generated_html = response.content[0].text
 
-                    # 5. Nettoyer les balises markdown si Claude les a ajoutées
+                    # 5. Nettoyer les balises markdown éventuelles
                     generated_html = re.sub(r"^```[^\n]*\n", "", generated_html)
                     generated_html = re.sub(r"\n```\s*$", "", generated_html.strip())
 
-                    st.session_state["dossier_html"] = generated_html
+                    # 6. Injecter le logo base64 MAINTENANT (après génération Claude)
+                    logo_b64 = st.session_state["dossier_logo_b64"]
+                    final_html = generated_html.replace(
+                        'src="LOGO_PLACEHOLDER"',
+                        f'src="data:image/png;base64,{logo_b64}"',
+                    )
+
+                    # 7. Générer le PDF via WeasyPrint
+                    try:
+                        import weasyprint
+                        from io import BytesIO
+                        pdf_buffer = BytesIO()
+                        weasyprint.HTML(string=final_html).write_pdf(pdf_buffer)
+                        st.session_state["dossier_pdf"] = pdf_buffer.getvalue()
+                    except Exception as pdf_err:
+                        st.session_state["dossier_pdf"] = None
+                        st.warning(f"⚠️ Génération PDF indisponible ({pdf_err}). Télécharge le HTML et imprime en PDF via Chrome.")
+
+                    st.session_state["dossier_html"] = final_html
                     st.success("✅ Dossier généré avec succès !")
 
                 except Exception as e:
@@ -1191,25 +1229,36 @@ with tab2:
     if st.session_state.get("dossier_html"):
         html_content = st.session_state["dossier_html"]
 
-        # Extraire le nom du candidat pour le nom de fichier
+        # Nom de fichier basé sur le candidat
         name_match = re.search(r'class="candidate-name">([^<]+)<', html_content)
         candidate_name = (
             name_match.group(1).strip().replace(" ", "_") if name_match else "candidat"
         )
-        filename = f"dossier_{candidate_name}.html"
 
-        st.download_button(
-            label="⬇️ Télécharger le Dossier (.html)",
-            data=html_content,
-            file_name=filename,
-            mime="text/html",
-            type="primary",
-            key="dossier_download",
-        )
-        st.caption(
-            "💡 Ouvre le fichier dans Chrome → **Ctrl+P** (Cmd+P sur Mac) → "
-            "**Enregistrer en PDF** → format A4, sans marges"
-        )
+        dl_col1, dl_col2 = st.columns(2)
+
+        with dl_col1:
+            if st.session_state.get("dossier_pdf"):
+                st.download_button(
+                    label="⬇️ Télécharger le Dossier (PDF)",
+                    data=st.session_state["dossier_pdf"],
+                    file_name=f"dossier_{candidate_name}.pdf",
+                    mime="application/pdf",
+                    type="primary",
+                    key="dossier_download_pdf",
+                )
+            else:
+                st.info("PDF non disponible — utilise le téléchargement HTML ci-dessous.")
+
+        with dl_col2:
+            st.download_button(
+                label="⬇️ Télécharger en HTML (backup)",
+                data=html_content,
+                file_name=f"dossier_{candidate_name}.html",
+                mime="text/html",
+                key="dossier_download_html",
+            )
+            st.caption("HTML : ouvre dans Chrome → Ctrl+P → Enregistrer en PDF")
 
         with st.expander("👁 Aperçu du dossier"):
             st.components.v1.html(html_content, height=900, scrolling=True)
