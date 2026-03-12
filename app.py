@@ -1256,7 +1256,9 @@ with tab2:
                     final_html = final_html.replace('{{LIEN_LINKEDIN}}', linkedin_url.strip() or "#")
 
                     # Sauvegarde pages 1+2 et PDF pour les révisions ultérieures
-                    st.session_state["dossier_html_pages12"] = final_html
+                    # On sauvegarde generated_html (placeholders LOGO/LinkedIn intacts, sans base64 logo)
+                    # pour éviter un payload gigantesque lors des révisions → timeout Anthropic
+                    st.session_state["dossier_html_pages12"] = generated_html
                     st.session_state["dossier_pdf_bytes"] = pdf_bytes
 
                     # ÉTAPE 5 — Appendre les pages du CV original comme images PNG
@@ -1373,11 +1375,16 @@ with tab2:
                                 max_tokens=8000,
                                 system=REVISION_SYSTEM_PROMPT,
                                 messages=[{"role": "user", "content": revision_user_prompt}],
-                                timeout=120.0,
+                                timeout=240.0,
                             )
                             revised = rev_response.content[0].text
                             revised = re.sub(r"^```[^\n]*\n", "", revised)
                             revised = re.sub(r"\n```\s*$", "", revised.strip())
+
+                            # Sauvegarde pages 1+2 révisées pour révisions futures
+                            # AVANT injection logo/LinkedIn pour garder les placeholders intacts
+                            # et éviter le timeout lié au payload base64 logo
+                            st.session_state["dossier_html_pages12"] = revised
 
                             # Re-injection logo
                             logo_b64_rev = st.session_state["dossier_logo_b64"]
@@ -1398,9 +1405,6 @@ with tab2:
                             else:
                                 li_div = ""
                             revised = revised.replace("LINKEDIN_CONTACT_ITEM_PLACEHOLDER", li_div)
-
-                            # Sauvegarde pages 1+2 révisées pour révisions futures
-                            st.session_state["dossier_html_pages12"] = revised
 
                             # Re-append pages CV
                             if pdf_bytes_rev:
