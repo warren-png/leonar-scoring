@@ -1282,13 +1282,12 @@ with tab2:
                     # ÉTAPE 6 — Injection du bouton "Enregistrer en PDF"
                     # Ce bouton appelle window.print() du navigateur = PDF parfait, natif, gratuit
                     print_button_html = """
-<div style="position:fixed;top:20px;right:20px;z-index:9999;background:#FFD700;border-radius:8px;box-shadow:0 4px 15px rgba(0,0,0,0.3);">
+<div class="no-print" style="position:fixed;top:20px;right:20px;z-index:9999;background:#FFD700;border-radius:8px;box-shadow:0 4px 15px rgba(0,0,0,0.3);">
   <button onclick="window.print()" style="background:#FFD700;color:#000;border:none;padding:12px 24px;font-size:14px;font-weight:800;cursor:pointer;border-radius:8px;font-family:sans-serif;letter-spacing:0.5px;">
     🖨️ Enregistrer en PDF
   </button>
 </div>
 <style>@media print { .no-print { display:none!important; } }</style>
-<div class="no-print" style="height:0"></div>
 """
                     # Sauvegarder pour la révision (le bouton doit être re-injecté)
                     st.session_state["_print_button_html"] = print_button_html
