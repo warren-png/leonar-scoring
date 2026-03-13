@@ -9,7 +9,7 @@
 <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
 <style>
 /* --- RESET --- */
-* { box-sizing: border-box; margin: 0; padding: 0; -webkit-print-color-adjust: exact; }
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 body {
 background-color: #555;
 font-family: 'Manrope', sans-serif;
@@ -31,8 +31,22 @@ display: flex;
 flex-direction: column;
 }
 @media print {
-body { background: none; padding: 0; }
-.page { margin: 0; box-shadow: none; page-break-after: always; min-height: 297mm; width: 210mm; overflow: visible; }
+* { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+body { background: none !important; padding: 0 !important; display: block !important; }
+.page {
+  margin: 0 !important;
+  box-shadow: none !important;
+  height: 297mm !important;
+  min-height: unset !important;
+  width: 210mm !important;
+  overflow: hidden !important;
+  break-after: page;
+  page-break-after: always;
+  position: relative !important;
+  display: flex !important;
+  flex-direction: column !important;
+}
+.no-print { display: none !important; }
 }
 /* --- HEADER & FOOTER --- */
 .header {
